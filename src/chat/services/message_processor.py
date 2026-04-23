@@ -7,6 +7,7 @@ import os
 import re
 import asyncio
 import aiohttp
+import json
 
 from src import config
 from src.chat.config import chat_config
@@ -27,6 +28,61 @@ FAKENITRO_STICKER_REGEX = re.compile(
 FAKENITRO_EMOJI_REGEX = re.compile(
     r"\[([^\]]+)\]\((https://cdn\.discordapp\.com/emojis/\d+\.(?:png|gif|webp)(?:\?[^\)]*)?)\)"
 )
+
+TEXT_ATTACHMENT_EXTENSIONS = {
+    ".txt",
+    ".text",
+    ".md",
+    ".markdown",
+    ".json",
+    ".jsonl",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".conf",
+    ".log",
+    ".csv",
+    ".tsv",
+    ".xml",
+    ".html",
+    ".htm",
+    ".css",
+    ".scss",
+    ".less",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".py",
+    ".java",
+    ".kt",
+    ".kts",
+    ".go",
+    ".rs",
+    ".rb",
+    ".php",
+    ".swift",
+    ".sql",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ps1",
+    ".bat",
+    ".cmd",
+    ".c",
+    ".cc",
+    ".cpp",
+    ".cxx",
+    ".h",
+    ".hpp",
+    ".vue",
+    ".svelte",
+    ".env",
+}
 
 
 def detect_bot_location(channel: Any) -> Dict[str, Any]:
@@ -85,6 +141,185 @@ class MessageProcessor:
         else:
             max_mb = float(image_cfg.get("MAX_GIF_SIZE_MB", 8))
         return int(max_mb * 1024 * 1024)
+
+    @staticmethod
+    def _normalize_attachment_content_type(content_type: Optional[str]) -> str:
+        return str(content_type or "").split(";", 1)[0].strip().lower()
+
+    def _is_supported_text_attachment(self, attachment: discord.Attachment) -> bool:
+        content_type = self._normalize_attachment_content_type(attachment.content_type)
+        extension = os.path.splitext(attachment.filename or "")[1].lower()
+        supported_mimes = {
+            str(mime).strip().lower()
+            for mime in chat_config.TEXT_ATTACHMENT_PROCESSING_CONFIG.get(
+                "SUPPORTED_TEXT_MIME_TYPES", set()
+            )
+        }
+
+        if content_type.startswith("text/"):
+            return True
+
+        if content_type in supported_mimes:
+            return True
+
+        if extension in TEXT_ATTACHMENT_EXTENSIONS and not content_type.startswith(
+            ("image/", "video/", "audio/")
+        ):
+            return True
+
+        return False
+
+    @staticmethod
+    def _looks_like_text(decoded_text: str) -> bool:
+        if not decoded_text:
+            return True
+
+        sample = decoded_text[:4000]
+        disallowed_count = 0
+        for ch in sample:
+            if ch in "\n\r\t":
+                continue
+            if ord(ch) < 32:
+                disallowed_count += 1
+
+        return disallowed_count <= max(3, len(sample) // 50)
+
+    def _decode_text_attachment_bytes(self, raw_bytes: bytes) -> Optional[str]:
+        if not raw_bytes:
+            return ""
+
+        if b"\x00" in raw_bytes and not raw_bytes.startswith(
+            (b"\xef\xbb\xbf", b"\xff\xfe", b"\xfe\xff")
+        ):
+            return None
+
+        candidate_encodings: List[str] = []
+        if raw_bytes.startswith(b"\xef\xbb\xbf"):
+            candidate_encodings.append("utf-8-sig")
+        elif raw_bytes.startswith((b"\xff\xfe", b"\xfe\xff")):
+            candidate_encodings.extend(["utf-16", "utf-16-le", "utf-16-be"])
+
+        candidate_encodings.extend(["utf-8", "gb18030"])
+
+        tried = set()
+        for encoding in candidate_encodings:
+            if encoding in tried:
+                continue
+            tried.add(encoding)
+            try:
+                decoded_text = raw_bytes.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+
+            if self._looks_like_text(decoded_text):
+                return decoded_text
+
+        return None
+
+    @staticmethod
+    def _maybe_pretty_format_text_attachment(
+        content: str, filename: Optional[str], mime_type: Optional[str]
+    ) -> str:
+        extension = os.path.splitext(filename or "")[1].lower()
+        normalized_mime_type = str(mime_type or "").strip().lower()
+
+        if extension in {".json", ".jsonl"} or normalized_mime_type in {
+            "application/json",
+            "application/ld+json",
+        }:
+            try:
+                parsed = json.loads(content)
+                return json.dumps(parsed, ensure_ascii=False, indent=2)
+            except Exception:
+                return content
+
+        return content
+
+    async def _extract_text_from_attachments(
+        self, attachments: List[discord.Attachment]
+    ) -> List[Dict[str, Any]]:
+        text_attachment_list: List[Dict[str, Any]] = []
+        if not attachments:
+            return text_attachment_list
+
+        config = chat_config.TEXT_ATTACHMENT_PROCESSING_CONFIG
+        max_files = int(config.get("MAX_TEXT_ATTACHMENTS_PER_MESSAGE", 5))
+        max_size_bytes = int(
+            float(config.get("MAX_TEXT_ATTACHMENT_SIZE_MB", 1)) * 1024 * 1024
+        )
+        max_chars = int(config.get("MAX_TEXT_ATTACHMENT_CHARS", 12000))
+
+        for attachment in attachments:
+            if len(text_attachment_list) >= max_files:
+                break
+
+            if not self._is_supported_text_attachment(attachment):
+                continue
+
+            if attachment.size and attachment.size > max_size_bytes:
+                log.warning(
+                    "文本附件超出大小限制，已跳过: %s (%s bytes > %s bytes)",
+                    attachment.filename,
+                    attachment.size,
+                    max_size_bytes,
+                )
+                continue
+
+            try:
+                file_bytes = await attachment.read()
+                if not file_bytes:
+                    decoded_content = "（文件为空）"
+                else:
+                    decoded_content = self._decode_text_attachment_bytes(file_bytes)
+                    if decoded_content is None:
+                        log.warning(
+                            "文本附件解码失败或疑似二进制文件，已跳过: %s",
+                            attachment.filename,
+                        )
+                        continue
+
+                normalized_mime_type = self._normalize_attachment_content_type(
+                    attachment.content_type
+                )
+                formatted_content = self._maybe_pretty_format_text_attachment(
+                    decoded_content,
+                    attachment.filename,
+                    normalized_mime_type,
+                )
+                normalized_content = (
+                    formatted_content.replace("\r\n", "\n").replace("\r", "\n").strip()
+                )
+                if not normalized_content:
+                    normalized_content = "（文件为空）"
+
+                original_length = len(normalized_content)
+                truncated = False
+                if original_length > max_chars:
+                    truncated = True
+                    normalized_content = (
+                        normalized_content[:max_chars].rstrip()
+                        + f"\n\n[内容已截断，原始长度约 {original_length} 字符]"
+                    )
+
+                text_attachment_list.append(
+                    {
+                        "filename": attachment.filename or "unknown.txt",
+                        "content": normalized_content,
+                        "mime_type": normalized_mime_type or "text/plain",
+                        "source": "attachment",
+                        "truncated": truncated,
+                    }
+                )
+                log.debug(
+                    "成功读取文本附件: %s, mime=%s, chars=%s",
+                    attachment.filename,
+                    normalized_mime_type or "text/plain",
+                    len(normalized_content),
+                )
+            except Exception as e:
+                log.error(f"读取文本附件 {attachment.filename} 时出错: {e}")
+
+        return text_attachment_list
 
     async def _fetch_image_aio(
         self, session: aiohttp.ClientSession, url: str, proxy: Optional[str] = None
@@ -443,6 +678,7 @@ class MessageProcessor:
 
         image_data_list = []
         video_data_list = []
+        text_attachment_list = []
         max_videos_per_message = int(
             chat_config.VIDEO_PROCESSING_CONFIG.get("MAX_VIDEOS_PER_MESSAGE", 1)
         )
@@ -462,6 +698,9 @@ class MessageProcessor:
                         limit=remaining_video_slots,
                     )
                 )
+            text_attachment_list.extend(
+                await self._extract_text_from_attachments(message.attachments)
+            )
 
         replied_message_content = ""
         if message.reference and message.reference.message_id:
@@ -708,6 +947,7 @@ class MessageProcessor:
             "replied_content": replied_message_content,
             "image_data_list": image_data_list,
             "video_data_list": video_data_list,
+            "text_attachment_list": text_attachment_list,
         }
 
     async def _extract_images_from_attachments(

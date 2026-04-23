@@ -30,6 +30,11 @@ MINIMAL_DEFAULT_CONFIG = {
 @pytest.fixture
 def prompt_service(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
+        prompt_service_module,
+        "load_project_dotenv",
+        lambda _file_path, *, parents: None,
+    )
+    monkeypatch.setattr(
         prompt_service_module.event_service,
         "get_prompt_overrides",
         lambda: None,
@@ -387,3 +392,43 @@ async def test_build_chat_prompt_keeps_current_user_input_unchanged_without_thin
 
     assert result[-1] == {"role": "user", "parts": ["[测试用户]: 你好"]}
     assert all(turn.get("parts") != ["我已了解用户输入"] for turn in result)
+
+
+@pytest.mark.asyncio
+async def test_build_chat_prompt_appends_text_attachment_to_current_user_input(
+    monkeypatch: pytest.MonkeyPatch, prompt_service: PromptService
+):
+    monkeypatch.setattr(
+        prompt_service_module,
+        "PROMPT_CONFIG",
+        {
+            "default": dict(MINIMAL_DEFAULT_CONFIG),
+        },
+    )
+
+    result = await prompt_service.build_chat_prompt(
+        user_name="测试用户",
+        message="请读附件",
+        replied_message=None,
+        images=None,
+        channel_context=None,
+        world_book_entries=None,
+        affection_status=None,
+        guild_name="测试服务器",
+        location_name="测试地点",
+        model_name="kimi-k2.5",
+        text_attachments=[
+            {
+                "filename": "note.md",
+                "mime_type": "text/markdown",
+                "content": "# 标题\n正文内容",
+                "truncated": False,
+            }
+        ],
+    )
+
+    assert result[-1]["role"] == "user"
+    assert result[-1]["parts"][0] == "[测试用户]: 请读附件"
+    assert "以下是用户随消息上传的文本文件内容：" in result[-1]["parts"][1]
+    assert "文件名: note.md" in result[-1]["parts"][1]
+    assert "# 标题\n正文内容" in result[-1]["parts"][1]

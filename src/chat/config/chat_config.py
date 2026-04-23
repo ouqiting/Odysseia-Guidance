@@ -547,6 +547,30 @@ VIDEO_PROCESSING_CONFIG = {
     },
 }
 
+# --- 文本附件处理配置 --- 
+TEXT_ATTACHMENT_PROCESSING_CONFIG = {
+    "MAX_TEXT_ATTACHMENTS_PER_MESSAGE": 5,  # 单次消息最多读取的文本附件数量
+    "MAX_TEXT_ATTACHMENT_SIZE_MB": 1,  # 单个文本附件最大大小（MB）
+    "MAX_TEXT_ATTACHMENT_CHARS": 12000,  # 单个文本附件最多注入的字符数
+    "SUPPORTED_TEXT_MIME_TYPES": {
+        "text/plain",
+        "text/markdown",
+        "text/x-markdown",
+        "text/csv",
+        "text/html",
+        "text/xml",
+        "application/json",
+        "application/ld+json",
+        "application/xml",
+        "application/javascript",
+        "application/x-javascript",
+        "application/x-sh",
+        "application/x-yaml",
+        "application/yaml",
+        "application/toml",
+    },
+}
+
 # --- 调试配置 ---
 DEBUG_CONFIG = {
     "LOG_FINAL_CONTEXT": False,  # 是否在日志中打印发送给AI的最终上下文，用于调试

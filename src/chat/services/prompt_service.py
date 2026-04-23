@@ -517,6 +517,34 @@ class PromptService:
 
         return obj
 
+    @staticmethod
+    def _build_text_attachment_prompt_part(
+        text_attachments: Optional[List[Dict[str, Any]]],
+    ) -> Optional[str]:
+        if not text_attachments:
+            return None
+
+        attachment_blocks: List[str] = ["以下是用户随消息上传的文本文件内容："]
+        for index, attachment in enumerate(text_attachments, start=1):
+            if not isinstance(attachment, dict):
+                continue
+
+            filename = str(attachment.get("filename") or f"attachment_{index}.txt").strip()
+            mime_type = str(attachment.get("mime_type") or "text/plain").strip()
+            content = str(attachment.get("content") or "（文件为空）").strip()
+            truncated_note = "，内容已截断" if attachment.get("truncated") else ""
+
+            attachment_blocks.append(
+                f"[附件{index}] 文件名: {filename}\n"
+                f"MIME类型: {mime_type}{truncated_note}\n"
+                f"内容:\n{content}"
+            )
+
+        if len(attachment_blocks) == 1:
+            return None
+
+        return "\n\n".join(attachment_blocks)
+
     async def build_chat_prompt(
         self,
         user_name: str,
@@ -536,6 +564,7 @@ class PromptService:
         retrieval_query_text: Optional[str] = None,  # 供 RAG/记忆检索复用的查询文本（可选）
         retrieval_query_embedding: Optional[List[float]] = None,  # 供 RAG/记忆检索复用的查询向量（可选）
         rag_timeout_fallback: bool = False,  # RAG 超时信号；长期记忆检索未成功时也会自动兜底
+        text_attachments: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         构建用于AI聊天的分层对话历史。
@@ -980,6 +1009,9 @@ class PromptService:
             if images
             else []
         )
+        text_attachment_prompt = self._build_text_attachment_prompt_part(
+            text_attachments
+        )
 
         # 处理文本和交错的表情图片
         if message:
@@ -1066,16 +1098,38 @@ class PromptService:
 
                     processed_parts[first_text_index] = formatted_message
 
+                if text_attachment_prompt:
+                    processed_parts.append(f"\n\n{text_attachment_prompt}")
+            elif text_attachment_prompt:
+                reply_prefix = ""
+                if hasattr(self, "_reply_context_to_inject") and self._reply_context_to_inject:
+                    reply_prefix = self._reply_context_to_inject + "\n\n"
+                    delattr(self, "_reply_context_to_inject")
+
+                processed_parts.insert(
+                    0,
+                    f"{reply_prefix}[{user_label}]: （用户上传了文本文件）\n\n{text_attachment_prompt}",
+                )
+
             current_user_parts.extend(processed_parts)
 
-        # 如果没有任何文本，但有贴纸或附件，添加一个默认的用户标签
-        if not message and (sticker_images or attachment_images):
-            # 检查是否有回复上下文需要合并
+        # 如果没有任何文本，但有贴纸、附件图片或文本附件，添加一个默认的用户标签
+        if not message and (sticker_images or attachment_images or text_attachment_prompt):
             reply_prefix = ""
             if hasattr(self, "_reply_context_to_inject") and self._reply_context_to_inject:
                 reply_prefix = self._reply_context_to_inject + "\n\n"
                 delattr(self, "_reply_context_to_inject")
-            current_user_parts.append(f"{reply_prefix}用户名:{safe_user_name}, 用户消息:(图片消息)")
+
+            if text_attachment_prompt:
+                message_hint = "（用户上传了文本文件）"
+                if sticker_images or attachment_images:
+                    message_hint = "（用户上传了文本文件和图片）"
+                current_user_parts.append(f"{reply_prefix}[{safe_user_name}]: {message_hint}")
+                current_user_parts.append(f"\n\n{text_attachment_prompt}")
+            else:
+                current_user_parts.append(
+                    f"{reply_prefix}用户名:{safe_user_name}, 用户消息:(图片消息)"
+                )
 
         # 追加所有贴纸图片到末尾
         for img_data in sticker_images:

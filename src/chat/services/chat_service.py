@@ -50,6 +50,7 @@ class PreparedGenerationContext:
     replied_content: str
     image_data_list: List[Dict[str, Any]]
     video_data_list: List[Dict[str, Any]]
+    text_attachment_list: List[Dict[str, Any]]
     channel_context: List[Dict[str, Any]]
     world_book_entries: List[Dict[str, Any]]
     personal_summary: Optional[str]
@@ -231,6 +232,7 @@ class ChatService:
         replied_content = processed_data["replied_content"]
         image_data_list = list(processed_data["image_data_list"])
         video_data_list = list(processed_data.get("video_data_list", []))
+        text_attachment_list = list(processed_data.get("text_attachment_list", []))
 
         is_blacklisted = False
         if guild_id:
@@ -244,10 +246,12 @@ class ChatService:
             replied_content = ""
             image_data_list = []
             video_data_list = []
+            text_attachment_list = []
             processed_data["user_content"] = user_content
             processed_data["replied_content"] = replied_content
             processed_data["image_data_list"] = image_data_list
             processed_data["video_data_list"] = video_data_list
+            processed_data["text_attachment_list"] = text_attachment_list
 
         raw_channel_context = await get_context_service().get_formatted_channel_history_new(
             message.channel.id,
@@ -285,6 +289,7 @@ class ChatService:
             replied_content=replied_content,
             image_data_list=image_data_list,
             video_data_list=video_data_list,
+            text_attachment_list=text_attachment_list,
             channel_context=channel_context,
             world_book_entries=world_book_entries,
             personal_summary=personal_summary,
@@ -396,6 +401,7 @@ class ChatService:
         request_replied_message = prepared_context.replied_content
         request_images = prepared_context.image_data_list
         request_videos = prepared_context.video_data_list
+        request_text_attachments = prepared_context.text_attachment_list
         request_channel_context = prepared_context.channel_context
 
         if request_override is not None:
@@ -403,6 +409,7 @@ class ChatService:
             request_replied_message = request_override.replied_message
             request_images = request_override.images
             request_videos = request_override.videos
+            request_text_attachments = []
             request_channel_context = request_override.channel_context
 
         return await gemini_service.generate_response(
@@ -413,6 +420,7 @@ class ChatService:
             replied_message=request_replied_message,
             images=request_images if request_images else None,
             videos=request_videos if request_videos else None,
+            text_attachments=request_text_attachments if request_text_attachments else None,
             user_name=message.author.display_name,
             channel_context=request_channel_context,
             world_book_entries=prepared_context.world_book_entries,
