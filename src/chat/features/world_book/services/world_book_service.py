@@ -13,6 +13,9 @@ from src.chat.config import chat_config
 from src.chat.features.world_book.services.incremental_rag_service import (
     incremental_rag_service,
 )
+from src.chat.features.world_book.services.member_profile_utils import (
+    build_member_profile_storage,
+)
 from src.database.database import AsyncSessionLocal
 from src.database.models import CommunityMemberProfile
 
@@ -326,30 +329,17 @@ class WorldBookService:
         自动创建一个最小的 community.member_profiles 名片，用于保证个人记忆功能可写入。
         - external_id: auto_discord_{discord_id}
         - title: user_name
-        - personality: 直接复制 user_name
-        - background/preferences 留空
+        - personality/background/preferences: 全部留空，作为后续自动补全的占位名片
         """
         safe_name = (user_name or "").strip() or f"用户 {discord_id}"
-        personality = safe_name
-        background = ""
-        preferences = ""
-
-        full_text = (
-            f"名称: {safe_name}\n"
-            f"Discord ID: {discord_id}\n"
-            f"性格特点: {personality}\n"
-            f"背景信息: {background}\n"
-            f"喜好偏好: {preferences}"
-        ).strip()
-
-        source_metadata = {
-            "name": safe_name,
-            "discord_id": str(discord_id),
-            "personality": personality,
-            "background": background,
-            "preferences": preferences,
-            "source": "auto_create",
-        }
+        profile_storage = build_member_profile_storage(
+            name=safe_name,
+            discord_id=discord_id,
+            personality="",
+            background="",
+            preferences="",
+            extra_source_metadata={"source": "auto_create"},
+        )
 
         external_id = f"auto_discord_{discord_id}"
 
@@ -369,8 +359,8 @@ class WorldBookService:
                             external_id=external_id,
                             discord_id=str(discord_id),
                             title=safe_name,
-                            full_text=full_text,
-                            source_metadata=source_metadata,
+                            full_text=profile_storage["full_text"],
+                            source_metadata=profile_storage["source_metadata"],
                         )
                         session.add(profile)
                         await session.flush()

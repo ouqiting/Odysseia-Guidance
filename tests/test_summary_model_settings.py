@@ -94,19 +94,19 @@ def test_ai_model_settings_modal_submits_main_and_summary_models():
 
 
 class _FakeScalarResult:
-    def __init__(self, summary: str):
-        self._summary = summary
+    def __init__(self, value):
+        self._value = value
 
     def scalars(self):
         return self
 
     def first(self):
-        return self._summary
+        return self._value
 
 
 class _FakeSession:
-    def __init__(self, summary: str = ""):
-        self._summary = summary
+    def __init__(self, value=None):
+        self._value = value
 
     async def __aenter__(self):
         return self
@@ -115,7 +115,7 @@ class _FakeSession:
         return False
 
     async def execute(self, stmt):
-        return _FakeScalarResult(self._summary)
+        return _FakeScalarResult(self._value)
 
 
 def test_personal_memory_summary_uses_latest_summary_model(
@@ -130,7 +130,18 @@ def test_personal_memory_summary_uses_latest_summary_model(
 
     monkeypatch.setenv("SUMMARY_MODEL", "deepseek-chat")
     monkeypatch.setattr(
-        personal_memory_service_module, "AsyncSessionLocal", lambda: _FakeSession("")
+        personal_memory_service_module,
+        "AsyncSessionLocal",
+        lambda: _FakeSession(
+            SimpleNamespace(
+                id=10,
+                discord_id="123",
+                title="Tester",
+                full_text="名称: Tester\nDiscord ID: 123\n性格特点: \n背景信息: \n喜好偏好: ",
+                source_metadata={"name": "Tester", "source": "auto_create"},
+                personal_summary="",
+            )
+        ),
     )
     monkeypatch.setattr(
         personal_memory_service_module.gemini_service,
@@ -141,6 +152,11 @@ def test_personal_memory_summary_uses_latest_summary_model(
         service,
         "_filter_new_long_memory_lines",
         AsyncMock(return_value=["- 用户喜欢猫"]),
+    )
+    monkeypatch.setattr(
+        service,
+        "maybe_autofill_member_profile_from_memory",
+        AsyncMock(return_value={"status": "skipped_no_inference"}),
     )
     monkeypatch.setattr(service, "update_summary_manually", AsyncMock())
 

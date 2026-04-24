@@ -139,6 +139,9 @@ async def test_auto_create_minimal_member_profile_uses_async_session(
     created_profile = create_session.added[0]
     assert created_profile.discord_id == "456"
     assert created_profile.title == "Auto User"
+    assert created_profile.source_metadata["personality"] == ""
+    assert created_profile.source_metadata["background"] == ""
+    assert created_profile.source_metadata["preferences"] == ""
     assert created_profile.source_metadata["source"] == "auto_create"
     await asyncio.sleep(0)
     process_member_mock.assert_awaited_once_with("777")

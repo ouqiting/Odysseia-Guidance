@@ -17,6 +17,15 @@ from src.chat.services.gemini_service import gemini_service
 from src.chat.features.personal_memory.services.personal_memory_vector_service import (
     personal_memory_vector_service,
 )
+from src.chat.features.world_book.services.incremental_rag_service import (
+    incremental_rag_service,
+)
+from src.chat.features.world_book.services.member_profile_utils import (
+    build_member_profile_storage,
+    coerce_source_metadata,
+    parse_member_profile,
+    profile_details_are_empty,
+)
 
 log = logging.getLogger(__name__)
 
@@ -169,6 +178,167 @@ class PersonalMemoryService:
 
         return filtered_lines
 
+    @staticmethod
+    def _profile_to_snapshot(profile: Any) -> dict[str, Any]:
+        if isinstance(profile, dict):
+            return dict(profile)
+
+        return {
+            "id": getattr(profile, "id", None),
+            "discord_id": getattr(profile, "discord_id", None),
+            "title": getattr(profile, "title", None),
+            "full_text": getattr(profile, "full_text", None),
+            "source_metadata": getattr(profile, "source_metadata", None),
+            "personal_summary": getattr(profile, "personal_summary", None),
+            "history": getattr(profile, "history", None),
+        }
+
+    @staticmethod
+    def _build_dialogue_text(conversation_history: list) -> str:
+        return "\n".join(
+            f"{'用户' if turn.get('role') == 'user' else 'AI'}: {' '.join(map(str, turn.get('parts', [])))}"
+            for turn in conversation_history
+        ).strip()
+
+    @staticmethod
+    def _extract_tag_block(response_text: str, tag_name: str) -> str:
+        match = re.search(
+            rf"<{tag_name}>(.*?)</{tag_name}>",
+            response_text or "",
+            re.DOTALL,
+        )
+        if not match:
+            return ""
+        return match.group(1).strip()
+
+    def _parse_profile_autofill_response(self, response_text: str) -> dict[str, str]:
+        return {
+            "personality": self._extract_tag_block(response_text, "personality"),
+            "background": self._extract_tag_block(response_text, "background"),
+            "preferences": self._extract_tag_block(response_text, "preferences"),
+        }
+
+    async def _infer_member_profile_fields_from_memory(
+        self,
+        *,
+        user_id: int,
+        profile_name: str,
+        dialogue_text: str,
+        existing_summary: str | None,
+    ) -> dict[str, str] | None:
+        prompt_template = PROMPT_CONFIG.get("member_profile_autofill_from_memory")
+        if not prompt_template:
+            log.error("未找到 'member_profile_autofill_from_memory' 的 prompt 模板。")
+            return None
+
+        final_prompt = prompt_template.format(
+            profile_name=profile_name or f"用户 {user_id}",
+            dialogue_history=dialogue_text or "无",
+            existing_memory=(existing_summary or "").strip() or "无",
+        )
+
+        ai_response = await gemini_service.generate_simple_response(
+            prompt=final_prompt,
+            generation_config=GEMINI_SUMMARY_GEN_CONFIG,
+            model_name=get_summary_model(),
+        )
+        if not ai_response:
+            log.warning("自动补全名片失败：AI 返回空响应 | user_id=%s", user_id)
+            return None
+
+        parsed_fields = self._parse_profile_autofill_response(ai_response)
+        if not any(parsed_fields.values()):
+            log.info("自动补全名片未提取到有效字段 | user_id=%s", user_id)
+            return None
+
+        return parsed_fields
+
+    async def maybe_autofill_member_profile_from_memory(
+        self,
+        *,
+        user_id: int,
+        profile: Any,
+        dialogue_text: str,
+        existing_summary: str | None,
+        persist: bool = True,
+        reindex_in_background: bool = True,
+    ) -> dict[str, Any]:
+        profile_snapshot = self._profile_to_snapshot(profile)
+        if not profile_snapshot.get("id"):
+            return {"status": "skipped_missing_profile"}
+
+        if not dialogue_text.strip():
+            return {"status": "skipped_empty_dialogue"}
+
+        if not profile_details_are_empty(profile_snapshot):
+            return {"status": "skipped_profile_already_filled"}
+
+        parsed_profile = parse_member_profile(profile_snapshot)
+        profile_name = (
+            str(parsed_profile.get("name", "") or "").strip()
+            or str(profile_snapshot.get("title", "") or "").strip()
+            or f"用户 {user_id}"
+        )
+        inferred_fields = await self._infer_member_profile_fields_from_memory(
+            user_id=user_id,
+            profile_name=profile_name,
+            dialogue_text=dialogue_text,
+            existing_summary=existing_summary,
+        )
+        if not inferred_fields:
+            return {"status": "skipped_no_inference"}
+
+        existing_metadata = coerce_source_metadata(profile_snapshot.get("source_metadata"))
+        updated_storage = build_member_profile_storage(
+            name=profile_name,
+            discord_id=profile_snapshot.get("discord_id") or str(user_id),
+            personality=inferred_fields.get("personality", ""),
+            background=inferred_fields.get("background", ""),
+            preferences=inferred_fields.get("preferences", ""),
+            extra_source_metadata={
+                **existing_metadata,
+                "auto_profile_filled_from_memory": True,
+                "auto_profile_filled_at": datetime.datetime.now().isoformat(
+                    timespec="seconds"
+                ),
+            },
+        )
+
+        result = {
+            "status": "preview",
+            "member_id": str(profile_snapshot["id"]),
+            "user_id": str(user_id),
+            "title": profile_name,
+            "fields": inferred_fields,
+            "full_text": updated_storage["full_text"],
+            "source_metadata": updated_storage["source_metadata"],
+        }
+
+        if not persist:
+            return result
+
+        async with AsyncSessionLocal() as session:
+            async with session.begin():
+                await session.execute(
+                    update(CommunityMemberProfile)
+                    .where(CommunityMemberProfile.id == profile_snapshot["id"])
+                    .values(
+                        title=profile_name,
+                        full_text=updated_storage["full_text"],
+                        source_metadata=updated_storage["source_metadata"],
+                    )
+                )
+
+        if reindex_in_background:
+            asyncio.create_task(
+                incremental_rag_service.process_community_member(
+                    str(profile_snapshot["id"])
+                )
+            )
+
+        result["status"] = "updated"
+        return result
+
     async def update_and_conditionally_summarize_memory(
         self, user_id: int, user_name: str, user_content: str, ai_response: str
     ):
@@ -274,12 +444,18 @@ class PersonalMemoryService:
         """私有方法：获取历史，生成摘要，并清空计数和历史。"""
         log.info(f"开始为用户 {user_id} 生成记忆摘要。")
 
+        profile_snapshot = None
         async with AsyncSessionLocal() as session:
-            stmt = select(CommunityMemberProfile.personal_summary).where(
+            stmt = select(CommunityMemberProfile).where(
                 CommunityMemberProfile.discord_id == str(user_id)
             )
             result = await session.execute(stmt)
-            old_summary = result.scalars().first() or ""
+            profile = result.scalars().first()
+            if profile is not None:
+                profile_snapshot = self._profile_to_snapshot(profile)
+                old_summary = profile.personal_summary or ""
+            else:
+                old_summary = ""
 
         # 解析旧摘要以获取现有的长期记忆（用于手动触发时保证“新增”）
         old_long_lines = []
@@ -307,10 +483,7 @@ class PersonalMemoryService:
             if _normalize_long_memory_line(line)
         }
 
-        dialogue_text = "\n".join(
-            f"{'用户' if turn.get('role') == 'user' else 'AI'}: {' '.join(map(str, turn.get('parts', [])))}"
-            for turn in conversation_history
-        ).strip()
+        dialogue_text = self._build_dialogue_text(conversation_history)
 
         if not dialogue_text:
             log.warning(f"用户 {user_id} 的对话历史格式化后为空。")
@@ -559,6 +732,30 @@ class PersonalMemoryService:
             len(final_long_lines),
             len(new_recent_lines),
         )
+
+        if profile_snapshot is not None:
+            try:
+                autofill_result = await self.maybe_autofill_member_profile_from_memory(
+                    user_id=user_id,
+                    profile=profile_snapshot,
+                    dialogue_text=dialogue_text,
+                    existing_summary=old_summary,
+                    persist=True,
+                    reindex_in_background=True,
+                )
+                if autofill_result.get("status") == "updated":
+                    log.info(
+                        "用户 %s 的自动名片补全已写入：member_id=%s",
+                        user_id,
+                        autofill_result.get("member_id"),
+                    )
+            except Exception as exc:
+                log.error(
+                    "自动补全用户 %s 的名片失败：%s",
+                    user_id,
+                    exc,
+                    exc_info=True,
+                )
 
         await self.update_summary_manually(user_id, final_summary)
         log.info(f"用户 {user_id} 的总结流程完成。")
