@@ -57,7 +57,9 @@ def test_select_final_results_keeps_user_card_on_top_and_caps_members(
     search_results = [
         _raw_result("community", 100, 0.99, "发起者名片的重复块"),
         _raw_result("community", 200, 0.98, "其他成员名片"),
-        _raw_result("community", 201, 0.97, "不该进入最终结果的第三张名片"),
+        _raw_result("community", 201, 0.97, "其他成员名片 2"),
+        _raw_result("community", 202, 0.96, "其他成员名片 3"),
+        _raw_result("community", 203, 0.95, "不该进入最终结果的第五张名片"),
         _raw_result("general_knowledge", 300, 0.96, "知识 1"),
         _raw_result("general_knowledge", 301, 0.95, "知识 2"),
         _raw_result("general_knowledge", 302, 0.94, "知识 3"),
@@ -65,11 +67,11 @@ def test_select_final_results_keeps_user_card_on_top_and_caps_members(
 
     results = service._select_final_results(search_results, user_card_chunk)
 
-    assert len(results) == 5
+    assert len(results) == 7
     assert results[0]["id"] == 100
     assert results[0]["metadata"]["is_user_card"] is True
-    assert [item["metadata"]["source_table"] for item in results].count("community") == 2
-    assert [item["id"] for item in results] == [100, 200, 300, 301, 302]
+    assert [item["metadata"]["source_table"] for item in results].count("community") == 4
+    assert [item["id"] for item in results] == [100, 200, 201, 202, 300, 301, 302]
 
 
 def test_select_final_results_dedupes_same_entry_and_backfills_with_knowledge(
@@ -81,6 +83,9 @@ def test_select_final_results_dedupes_same_entry_and_backfills_with_knowledge(
         _raw_result("community", 200, 0.99, "成员 200 的第一个块"),
         _raw_result("community", 200, 0.98, "成员 200 的第二个块"),
         _raw_result("community", 201, 0.97, "成员 201"),
+        _raw_result("community", 202, 0.965, "成员 202"),
+        _raw_result("community", 203, 0.955, "成员 203"),
+        _raw_result("community", 204, 0.945, "成员 204"),
         _raw_result("general_knowledge", 300, 0.96, "知识 1"),
         _raw_result("general_knowledge", 301, 0.95, "知识 2"),
         _raw_result("general_knowledge", 302, 0.94, "知识 3"),
@@ -89,7 +94,7 @@ def test_select_final_results_dedupes_same_entry_and_backfills_with_knowledge(
 
     results = service._select_final_results(search_results)
 
-    assert len(results) == 6
-    assert [item["id"] for item in results] == [200, 201, 300, 301, 302, 303]
-    assert [item["metadata"]["source_table"] for item in results].count("community") == 2
+    assert len(results) == 8
+    assert [item["id"] for item in results] == [200, 201, 202, 203, 300, 301, 302, 303]
+    assert [item["metadata"]["source_table"] for item in results].count("community") == 4
     assert [item["metadata"]["source_table"] for item in results].count("general_knowledge") == 4
