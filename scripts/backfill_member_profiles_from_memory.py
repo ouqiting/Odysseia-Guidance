@@ -10,6 +10,7 @@
   python scripts/backfill_member_profiles_from_memory.py --user-id 1234567890
   python scripts/backfill_member_profiles_from_memory.py --limit 20
   python scripts/backfill_member_profiles_from_memory.py --write
+  python scripts/backfill_member_profiles_from_memory.py --force-overwrite --write
 """
 
 import argparse
@@ -59,6 +60,7 @@ async def _process_profile(
     profile: CommunityMemberProfile,
     *,
     write: bool,
+    force_overwrite: bool,
 ) -> dict:
     user_id = str(profile.discord_id or "").strip()
     dialogue_text = personal_memory_service._build_dialogue_text(profile.history or [])
@@ -73,6 +75,7 @@ async def _process_profile(
         existing_summary=profile.personal_summary,
         persist=write,
         reindex_in_background=False,
+        force_overwrite=force_overwrite,
     )
 
     if write and result.get("status") == "updated":
@@ -92,6 +95,11 @@ async def main():
         action="store_true",
         help="真正写入数据库；默认只 dry-run 输出结果",
     )
+    parser.add_argument(
+        "--force-overwrite",
+        action="store_true",
+        help="忽略现有名片字段是否为空，强制重新生成并覆盖 personality/background/preferences",
+    )
     args = parser.parse_args()
 
     targets = await _load_targets(args.user_id, args.limit)
@@ -102,7 +110,7 @@ async def main():
     log.info(
         "开始处理成员名片回填：count=%s, mode=%s",
         len(targets),
-        "write" if args.write else "dry-run",
+        f"{'write' if args.write else 'dry-run'}{' + force-overwrite' if args.force_overwrite else ''}",
     )
 
     updated = 0
@@ -110,7 +118,11 @@ async def main():
     skipped = 0
 
     for index, profile in enumerate(targets, start=1):
-        result = await _process_profile(profile, write=args.write)
+        result = await _process_profile(
+            profile,
+            write=args.write,
+            force_overwrite=args.force_overwrite,
+        )
         status = result.get("status", "unknown")
         discord_id = str(getattr(profile, "discord_id", "") or "")
         title = str(getattr(profile, "title", "") or "")
@@ -131,13 +143,14 @@ async def main():
             status,
         )
 
-        if status in {"preview", "updated"}:
+        if status in {"preview", "updated", "skipped_profile_already_filled"}:
             print(
                 json.dumps(
                     {
                         "discord_id": discord_id,
                         "title": title,
                         "status": status,
+                        "existing_fields": result.get("existing_fields", {}),
                         "fields": result.get("fields", {}),
                         "full_text": result.get("full_text", ""),
                     },

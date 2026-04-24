@@ -262,6 +262,7 @@ class PersonalMemoryService:
         existing_summary: str | None,
         persist: bool = True,
         reindex_in_background: bool = True,
+        force_overwrite: bool = False,
     ) -> dict[str, Any]:
         profile_snapshot = self._profile_to_snapshot(profile)
         if not profile_snapshot.get("id"):
@@ -270,10 +271,19 @@ class PersonalMemoryService:
         if not dialogue_text.strip():
             return {"status": "skipped_empty_dialogue"}
 
-        if not profile_details_are_empty(profile_snapshot):
-            return {"status": "skipped_profile_already_filled"}
-
         parsed_profile = parse_member_profile(profile_snapshot)
+        existing_fields = {
+            "personality": str(parsed_profile.get("personality", "") or "").strip(),
+            "background": str(parsed_profile.get("background", "") or "").strip(),
+            "preferences": str(parsed_profile.get("preferences", "") or "").strip(),
+        }
+
+        if not force_overwrite and not profile_details_are_empty(profile_snapshot):
+            return {
+                "status": "skipped_profile_already_filled",
+                "existing_fields": existing_fields,
+            }
+
         profile_name = (
             str(parsed_profile.get("name", "") or "").strip()
             or str(profile_snapshot.get("title", "") or "").strip()
@@ -310,6 +320,7 @@ class PersonalMemoryService:
             "user_id": str(user_id),
             "title": profile_name,
             "fields": inferred_fields,
+            "existing_fields": existing_fields,
             "full_text": updated_storage["full_text"],
             "source_metadata": updated_storage["source_metadata"],
         }
