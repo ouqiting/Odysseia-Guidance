@@ -89,7 +89,7 @@ def test_select_final_results_dedupes_same_entry_and_backfills_with_knowledge(
 
     results = service._select_final_results(search_results)
 
-    assert len(results) == 5
-    assert [item["id"] for item in results] == [200, 201, 300, 301, 302]
+    assert len(results) == 6
+    assert [item["id"] for item in results] == [200, 201, 300, 301, 302, 303]
     assert [item["metadata"]["source_table"] for item in results].count("community") == 2
-    assert [item["metadata"]["source_table"] for item in results].count("general_knowledge") == 3
+    assert [item["metadata"]["source_table"] for item in results].count("general_knowledge") == 4

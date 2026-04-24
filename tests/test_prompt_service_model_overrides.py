@@ -2,6 +2,7 @@
 
 import os
 import sys
+import types
 
 import pytest
 
@@ -432,3 +433,59 @@ async def test_build_chat_prompt_appends_text_attachment_to_current_user_input(
     assert "以下是用户随消息上传的文本文件内容：" in result[-1]["parts"][1]
     assert "文件名: note.md" in result[-1]["parts"][1]
     assert "# 标题\n正文内容" in result[-1]["parts"][1]
+
+
+@pytest.mark.asyncio
+async def test_build_chat_prompt_uses_40_line_personal_memory_fallback(
+    monkeypatch: pytest.MonkeyPatch, prompt_service: PromptService
+):
+    monkeypatch.setattr(
+        prompt_service_module,
+        "PROMPT_CONFIG",
+        {
+            "default": dict(MINIMAL_DEFAULT_CONFIG),
+        },
+    )
+
+    vector_service_stub = types.ModuleType(
+        "src.chat.features.personal_memory.services.personal_memory_vector_service"
+    )
+    vector_service_stub.personal_memory_vector_service = types.SimpleNamespace(
+        parse_personal_summary=lambda _summary: [
+            {"memory_text": f"长期记忆 {index:02d}"} for index in range(1, 60)
+        ]
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "src.chat.features.personal_memory.services.personal_memory_vector_service",
+        vector_service_stub,
+    )
+
+    result = await prompt_service.build_chat_prompt(
+        user_name="测试用户",
+        message="你好",
+        replied_message=None,
+        images=None,
+        channel_context=None,
+        world_book_entries=None,
+        affection_status=None,
+        guild_name="测试服务器",
+        location_name="测试地点",
+        model_name="kimi-k2.5",
+        personal_summary="### 长期记忆\n- 占位",
+        rag_timeout_fallback=True,
+    )
+
+    personal_memory_turn = next(
+        turn
+        for turn in result
+        if turn.get("role") == "user"
+        and isinstance(turn.get("parts"), list)
+        and turn["parts"]
+        and "<personal_memory>" in turn["parts"][0]
+    )
+    personal_memory_text = personal_memory_turn["parts"][0]
+
+    assert "【长期记忆（兜底：原文前40条）】" in personal_memory_text
+    assert "长期记忆 40" in personal_memory_text
+    assert "长期记忆 41" not in personal_memory_text

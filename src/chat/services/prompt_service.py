@@ -712,9 +712,12 @@ class PromptService:
                 recent_dynamics_text = ""
 
         # Part B：长期记忆
-        # - 正常模式：向量召回（Top10相关 + 随机5条）
-        # - 兜底模式：只要向量检索未成功（含 RAG 超时熔断），直接提取“长期记忆”原文前30条
+        # - 正常模式：向量召回（Top20相关 + 随机5条）
+        # - 兜底模式：只要向量检索未成功（含 RAG 超时熔断），直接提取“长期记忆”原文前40条
         query_text_for_retrieval = (retrieval_query_text or message or "").strip()
+        long_term_relevant_limit = 20
+        long_term_random_limit = 5
+        long_term_fallback_limit = 40
 
         long_term_lines: List[str] = []
         long_term_hits: List[Dict[str, Any]] = []
@@ -763,7 +766,7 @@ class PromptService:
                         if not mem_text:
                             continue
                         long_term_lines.append(f"- {mem_text}")
-                        if len(long_term_lines) >= 30:
+                        if len(long_term_lines) >= long_term_fallback_limit:
                             break
 
                     if long_term_lines:
@@ -775,7 +778,7 @@ class PromptService:
                     )
                     long_term_lines = []
 
-            # 兜底优先级 2：如果 summary 解析不到（例如 summary 为空/格式异常），从向量表直接取最近30条（不做相似度检索）
+            # 兜底优先级 2：如果 summary 解析不到（例如 summary 为空/格式异常），从向量表直接取最近40条（不做相似度检索）
             if not long_term_lines and user_id:
                 try:
                     from sqlalchemy import select
@@ -788,7 +791,7 @@ class PromptService:
                             .where(PersonalMemoryChunk.discord_id == str(user_id))
                             .where(PersonalMemoryChunk.memory_type == "long_term")
                             .order_by(PersonalMemoryChunk.id.desc())
-                            .limit(30)
+                            .limit(long_term_fallback_limit)
                         )
                         rows = [str(x or "").strip() for x in res.scalars().all()]
 
@@ -852,7 +855,7 @@ class PromptService:
                             continue
 
                         long_term_lines.append(f"- {text}")
-                        if len(long_term_lines) >= 30:
+                        if len(long_term_lines) >= long_term_fallback_limit:
                             break
 
                     if long_term_lines:
@@ -885,11 +888,13 @@ class PromptService:
             if long_term_lines:
                 if use_long_term_fallback:
                     blocks.append(
-                        "【长期记忆（兜底：原文前30条）】\n" + "\n".join(long_term_lines)
+                        f"【长期记忆（兜底：原文前{long_term_fallback_limit}条）】\n"
+                        + "\n".join(long_term_lines)
                     )
                 else:
                     blocks.append(
-                        "【长期记忆（Top10相关 + 随机5条）】\n" + "\n".join(long_term_lines)
+                        f"【长期记忆（Top{long_term_relevant_limit}相关 + 随机{long_term_random_limit}条）】\n"
+                        + "\n".join(long_term_lines)
                     )
             if recent_dynamics_text:
                 blocks.append(f"【近期动态】\n{recent_dynamics_text}")

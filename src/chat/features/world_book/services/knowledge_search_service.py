@@ -21,11 +21,11 @@ class KnowledgeSearchService:
         log.info("KnowledgeSearchService 已初始化")
         # 在未来可以从配置中加载参数
         self.config = {
-            "TOP_K_VECTOR": 30,  # 增加召回量，防止指令词(如"开始xx模式")导致核心词排名下降
-            "TOP_K_FTS": 30,     # 增加召回量，提高关键字匹配的容错率
+            "TOP_K_VECTOR": 40,  # 适度提高向量召回量，降低长指令/噪声词对语义检索的影响
+            "TOP_K_FTS": 40,     # 同步扩大关键词召回池，避免融合阶段候选过窄
             "RRF_K": 60,
-            "HYBRID_SEARCH_POOL_K": 10, # SQL 侧保留适度候选池，兼顾最终配比与查询开销
-            "FINAL_RESULT_LIMIT": 5, # 最终注入给上层的结果数量
+            "HYBRID_SEARCH_POOL_K": 20, # 扩大融合候选池，避免最终注入数量提升后被前序截断
+            "FINAL_RESULT_LIMIT": 10, # 最终注入给上层的结果数量
             "MAX_MEMBER_RESULTS": 2, # 最终结果里，成员名片类结果最多保留 2 条
             "TARGET_KNOWLEDGE_RESULTS": 3, # 最终结果里，优先保证 3 条知识条目
             "VECTOR_DISTANCE_THRESHOLD": 0.5, # 向量搜索距离阈值，过滤不相关结果
