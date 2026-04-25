@@ -360,6 +360,28 @@ class ContextServiceTest:
         except Exception as e:
             log.warning(f"[单条消息缓存] 写入频道 {channel_id} 缓存文件失败: {e}")
 
+    def _delete_messages_from_reply_cache(
+        self, channel_id: int, message_ids: Set[int]
+    ) -> int:
+        cache_file_path = self._get_cache_file_path(channel_id)
+        should_load = channel_id in self.loaded_channel_caches or os.path.isfile(
+            cache_file_path
+        )
+        if not should_load:
+            return 0
+
+        self._ensure_channel_cache_loaded(channel_id)
+        channel_cache = self._get_channel_cache(channel_id)
+        removed_count = 0
+        for message_id in message_ids:
+            if channel_cache.pop(message_id, None) is not None:
+                removed_count += 1
+
+        if removed_count > 0:
+            self._save_channel_cache(channel_id)
+
+        return removed_count
+
     # --- 主动聊天缓存 ---
 
     def _get_active_cache_file_path(self, channel_id: int) -> str:
@@ -447,6 +469,42 @@ class ContextServiceTest:
             json.dump(data, file, ensure_ascii=False)
 
         os.replace(temp_file_path, cache_file_path)
+
+    def _save_active_channel_cache(self, channel_id: int) -> None:
+        entries = sorted(
+            self._get_active_channel_cache(channel_id).values(),
+            key=self._active_sort_key,
+        )
+        self._write_active_cache_sync(channel_id, list(entries))
+
+    def _delete_messages_from_active_cache(
+        self, channel_id: int, message_ids: Set[int]
+    ) -> int:
+        removed_count = 0
+
+        pending_buffer = self._get_pending_active_buffer(channel_id)
+        for message_id in message_ids:
+            if pending_buffer.pop(message_id, None) is not None:
+                removed_count += 1
+
+        cache_file_path = self._get_active_cache_file_path(channel_id)
+        should_load = channel_id in self.loaded_active_channel_caches or os.path.isfile(
+            cache_file_path
+        )
+        if not should_load:
+            return removed_count
+
+        self._ensure_active_channel_cache_loaded(channel_id)
+        channel_cache = self._get_active_channel_cache(channel_id)
+        removed_from_persisted = 0
+        for message_id in message_ids:
+            if channel_cache.pop(message_id, None) is not None:
+                removed_from_persisted += 1
+
+        if removed_from_persisted > 0:
+            self._save_active_channel_cache(channel_id)
+
+        return removed_count + removed_from_persisted
 
     def _persist_active_batch_sync(
         self, channel_id: int, batch_entries: List[ActiveCachedMessage]
@@ -729,6 +787,43 @@ class ContextServiceTest:
         pending_buffer.pop(snapshot.message_id, None)
         pending_buffer[snapshot.message_id] = snapshot
         self._maybe_schedule_active_flush(channel_id)
+
+    async def delete_messages_from_caches(
+        self, channel_id: int, message_ids: List[int] | Set[int]
+    ) -> bool:
+        normalized_message_ids: Set[int] = set()
+        for message_id in message_ids:
+            try:
+                normalized_message_ids.add(int(message_id))
+            except (TypeError, ValueError):
+                continue
+
+        if not normalized_message_ids:
+            return False
+
+        await self._cancel_active_flush_task(channel_id)
+
+        reply_removed = self._delete_messages_from_reply_cache(
+            channel_id, normalized_message_ids
+        )
+        active_removed = self._delete_messages_from_active_cache(
+            channel_id, normalized_message_ids
+        )
+        removed = reply_removed > 0 or active_removed > 0
+
+        if removed:
+            log.info(
+                "[缓存删除] 频道 %s 删除消息缓存: reply=%s, active=%s, ids=%s",
+                channel_id,
+                reply_removed,
+                active_removed,
+                sorted(normalized_message_ids),
+            )
+
+        if channel_id not in self.high_priority_channels:
+            self._maybe_schedule_active_flush(channel_id)
+
+        return removed
 
     def _collect_live_cached_snapshots(
         self, channel_id: int

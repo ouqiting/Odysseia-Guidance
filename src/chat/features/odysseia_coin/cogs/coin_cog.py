@@ -208,6 +208,42 @@ class CoinCog(commands.Cog):
                 f"处理用户 {message.author.id} 的每日发言奖励时出错: {e}", exc_info=True
             )
 
+    @commands.Cog.listener()
+    async def on_raw_message_delete(self, payload: discord.RawMessageDeleteEvent):
+        if payload.guild_id is None:
+            return
+
+        try:
+            await get_context_service().delete_messages_from_caches(
+                payload.channel_id, [payload.message_id]
+            )
+        except RuntimeError:
+            log.warning("[缓存删除] ContextServiceTest 尚未初始化，跳过删除事件。")
+        except Exception as e:
+            log.warning(
+                f"[缓存删除] 处理频道 {payload.channel_id} 单条消息删除事件失败: {e}",
+                exc_info=True,
+            )
+
+    @commands.Cog.listener()
+    async def on_raw_bulk_message_delete(
+        self, payload: discord.RawBulkMessageDeleteEvent
+    ):
+        if payload.guild_id is None or not payload.message_ids:
+            return
+
+        try:
+            await get_context_service().delete_messages_from_caches(
+                payload.channel_id, list(payload.message_ids)
+            )
+        except RuntimeError:
+            log.warning("[缓存删除] ContextServiceTest 尚未初始化，跳过批量删除事件。")
+        except Exception as e:
+            log.warning(
+                f"[缓存删除] 处理频道 {payload.channel_id} 批量消息删除事件失败: {e}",
+                exc_info=True,
+            )
+
     async def handle_new_thread_reward(
         self, thread: discord.Thread, first_message: discord.Message
     ):

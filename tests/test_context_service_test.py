@@ -428,6 +428,127 @@ async def test_legacy_reply_cache_is_ignored_and_rewritten(
 
 
 @pytest.mark.asyncio
+async def test_delete_messages_from_reply_and_active_caches(
+    configured_context_module: Path,
+):
+    channel = FakeChannel(channel_id=414)
+    now = datetime.now(timezone.utc)
+
+    reply_cache_dir = configured_context_module / "reply_message_cache"
+    reply_cache_dir.mkdir(exist_ok=True)
+    reply_cache_file = reply_cache_dir / f"reply_cache_{channel.id}.json"
+    reply_cache_file.write_text(
+        context_module.json.dumps(
+            [
+                context_module.CachedReplyMessage(
+                    message_id=4101,
+                    author_display_name="Alice",
+                    content="reply-1",
+                    created_at_ts=now.timestamp(),
+                ).to_dict(),
+                context_module.CachedReplyMessage(
+                    message_id=4102,
+                    author_display_name="Bob",
+                    content="reply-2",
+                    created_at_ts=(now + timedelta(seconds=1)).timestamp(),
+                ).to_dict(),
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    active_cache_dir = configured_context_module / "active_chat_cache"
+    active_cache_dir.mkdir(exist_ok=True)
+    active_cache_file = active_cache_dir / f"active_cache_{channel.id}.json"
+    active_cache_file.write_text(
+        context_module.json.dumps(
+            [
+                context_module.ActiveCachedMessage(
+                    message_id=4101,
+                    author_display_name="Alice",
+                    content="active-1",
+                    created_at_ts=now.timestamp(),
+                ).to_dict(),
+                context_module.ActiveCachedMessage(
+                    message_id=4103,
+                    author_display_name="Carol",
+                    content="active-3",
+                    created_at_ts=(now + timedelta(seconds=2)).timestamp(),
+                ).to_dict(),
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    service = context_module.ContextServiceTest(FakeBot(channels=[channel]))
+    removed = await service.delete_messages_from_caches(channel.id, [4101])
+
+    saved_reply_entries = context_module.json.loads(
+        reply_cache_file.read_text(encoding="utf-8")
+    )
+    saved_active_entries = context_module.json.loads(
+        active_cache_file.read_text(encoding="utf-8")
+    )
+
+    assert removed is True
+    assert {entry["message_id"] for entry in saved_reply_entries} == {4102}
+    assert {entry["message_id"] for entry in saved_active_entries} == {4103}
+
+
+@pytest.mark.asyncio
+async def test_delete_messages_from_caches_removes_pending_active_buffer(
+    configured_context_module: Path,
+):
+    channel = FakeChannel(channel_id=424)
+    bot = FakeBot(channels=[channel])
+    service = context_module.ContextServiceTest(bot)
+    now = datetime.now(timezone.utc)
+
+    first = build_message(
+        4201,
+        channel,
+        author_name="Alice",
+        content="待删除消息",
+        created_at=now,
+    )
+    second = build_message(
+        4202,
+        channel,
+        author_name="Bob",
+        content="保留消息",
+        created_at=now + timedelta(seconds=1),
+    )
+
+    service.mark_channel_high_priority(channel.id)
+    await service.record_message_for_active_cache(first)
+    await service.record_message_for_active_cache(second)
+
+    removed = await service.delete_messages_from_caches(channel.id, [4201])
+    pending_buffer = service._get_pending_active_buffer(channel.id)
+
+    assert removed is True
+    assert 4201 not in pending_buffer
+    assert 4202 in pending_buffer
+
+    service.clear_channel_high_priority(channel.id)
+    await asyncio.sleep(0)
+    task = service.active_flush_tasks.get(channel.id)
+    if task is not None:
+        await task
+
+    cache_file = (
+        configured_context_module
+        / "active_chat_cache"
+        / f"active_cache_{channel.id}.json"
+    )
+    saved_entries = context_module.json.loads(cache_file.read_text(encoding="utf-8"))
+
+    assert {entry["message_id"] for entry in saved_entries} == {4202}
+
+
+@pytest.mark.asyncio
 async def test_persisted_active_cache_and_live_cache_are_deduplicated(
     configured_context_module: Path,
 ):
