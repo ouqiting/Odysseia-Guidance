@@ -272,7 +272,7 @@ class OpenAIService:
         effective_model_name = model_name or "deepseek-chat"
         is_deepseek_model = effective_model_name in {
             "deepseek-chat",
-            "deepseek-reasoner",
+            "deepseek-v4-pro",
         }
         is_custom_model = effective_model_name == "custom"
         is_kimi_model = effective_model_name == "kimi-k2.5"
@@ -555,7 +555,7 @@ class OpenAIService:
         effective_model_name = model_name or "deepseek-chat"
         is_deepseek_model = effective_model_name in {
             "deepseek-chat",
-            "deepseek-reasoner",
+            "deepseek-v4-pro",
         }
         is_custom_model = effective_model_name == "custom"
         is_kimi_model = effective_model_name == "kimi-k2.5"
