@@ -199,6 +199,14 @@ MESSAGE_SETTINGS = {
     "DM_THRESHOLD": 2000,  # 当消息长度超过此值时，通过私信发送
 }
 
+# --- 机器人艾特回复限制 ---
+# 允许响应其他机器人对当前机器人的 @mention，但为避免机器人互相循环，
+# 在同一频道内按固定时间窗口限流。
+BOT_MENTION_REPLY_LIMIT = {
+    "WINDOW_SECONDS": 600,
+    "MAX_COUNT": 5,
+}
+
 # --- 主动表情反应（本地 Ollama）---
 REACTION_AI = {
     "url": os.getenv("REACTION_AI_URL", "http://host.docker.internal:11434/v1"),

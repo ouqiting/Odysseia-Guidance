@@ -77,6 +77,7 @@ def ai_chat_cog_module(monkeypatch: pytest.MonkeyPatch):
             CHAT_ENABLED=True,
             MESSAGE_SETTINGS={"DM_THRESHOLD": 1000},
             UNRESTRICTED_CHANNEL_IDS=set(),
+            BOT_MENTION_REPLY_LIMIT={"WINDOW_SECONDS": 600, "MAX_COUNT": 5},
         ),
     )
     monkeypatch.setitem(
@@ -413,3 +414,119 @@ async def test_deliver_generated_reply_uses_transformed_text_for_overflow_dm(
 
     overflow_mock.assert_awaited_once()
     assert overflow_mock.await_args.args[1] == "x" * 5000
+
+
+def test_bot_mention_reply_quota_resets_after_window(
+    monkeypatch: pytest.MonkeyPatch,
+    ai_chat_cog_module,
+):
+    bot = SimpleNamespace(user=SimpleNamespace(id=999))
+    cog = ai_chat_cog_module.AIChatCog(bot)
+    message = SimpleNamespace(channel=SimpleNamespace(id=321))
+    monotonic_values = iter([100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 701.0])
+
+    monkeypatch.setattr(
+        ai_chat_cog_module.time, "monotonic", lambda: next(monotonic_values)
+    )
+
+    for _ in range(5):
+        assert cog._consume_bot_mention_reply_quota(message) is True
+
+    assert cog._consume_bot_mention_reply_quota(message) is False
+    assert cog._consume_bot_mention_reply_quota(message) is True
+
+
+@pytest.mark.asyncio
+async def test_on_message_allows_bot_authored_mentions_within_quota(
+    monkeypatch: pytest.MonkeyPatch,
+    ai_chat_cog_module,
+):
+    bot_user = SimpleNamespace(id=999)
+    bot = SimpleNamespace(user=bot_user)
+    cog = ai_chat_cog_module.AIChatCog(bot)
+    message = SimpleNamespace(
+        id=123,
+        guild=SimpleNamespace(id=456),
+        mentions=[bot_user],
+        author=SimpleNamespace(id=789, bot=True),
+        channel=SimpleNamespace(id=321),
+    )
+
+    process_message_mock = AsyncMock(return_value={"user_content": "hello"})
+    should_process_mock = AsyncMock(return_value=True)
+    blacklist_mock = AsyncMock(return_value=False)
+    register_task_mock = AsyncMock(return_value=42)
+    generate_mock = AsyncMock()
+
+    monkeypatch.setattr(
+        ai_chat_cog_module.message_processor,
+        "process_message",
+        process_message_mock,
+    )
+    monkeypatch.setattr(
+        ai_chat_cog_module.chat_db_manager,
+        "is_user_globally_blacklisted",
+        blacklist_mock,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ai_chat_cog_module.chat_service,
+        "should_process_message",
+        should_process_mock,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ai_chat_cog_module.reply_recovery_manager,
+        "register_message_task",
+        register_task_mock,
+        raising=False,
+    )
+    monkeypatch.setattr(cog, "_generate_and_deliver_reply", generate_mock)
+
+    await cog.on_message(message)
+
+    process_message_mock.assert_awaited_once_with(message, bot)
+    blacklist_mock.assert_awaited_once_with(789)
+    should_process_mock.assert_awaited_once_with(message)
+    register_task_mock.assert_awaited_once_with(message)
+    generate_mock.assert_awaited_once_with(
+        message,
+        {"user_content": "hello"},
+        task_id=42,
+        reason="on_message",
+        use_typing=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_message_ignores_bot_authored_mentions_after_quota_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+    ai_chat_cog_module,
+):
+    bot_user = SimpleNamespace(id=999)
+    bot = SimpleNamespace(user=bot_user)
+    cog = ai_chat_cog_module.AIChatCog(bot)
+    message = SimpleNamespace(
+        id=123,
+        guild=SimpleNamespace(id=456),
+        mentions=[bot_user],
+        author=SimpleNamespace(id=789, bot=True),
+        channel=SimpleNamespace(id=321),
+    )
+
+    process_message_mock = AsyncMock()
+    generate_mock = AsyncMock()
+
+    monkeypatch.setattr(ai_chat_cog_module.time, "monotonic", lambda: 150.0)
+    monkeypatch.setattr(
+        ai_chat_cog_module.message_processor,
+        "process_message",
+        process_message_mock,
+    )
+    monkeypatch.setattr(cog, "_generate_and_deliver_reply", generate_mock)
+    cog._bot_mention_reply_windows[321] = (100.0, 5)
+
+    await cog.on_message(message)
+
+    process_message_mock.assert_not_awaited()
+    generate_mock.assert_not_awaited()

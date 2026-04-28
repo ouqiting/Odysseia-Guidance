@@ -4,6 +4,7 @@ import asyncio
 import io
 import logging
 import re
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -48,6 +49,7 @@ class AIChatCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._bot_mention_reply_windows: dict[int, tuple[float, int]] = {}
 
     def _get_text_length_without_emojis(self, text: str) -> int:
         emoji_pattern = r"<a?:.+?:\d+>"
@@ -135,6 +137,36 @@ class AIChatCog(commands.Cog):
         if not content:
             return author_mention
         return f"{author_mention}\n{content}"
+
+    def _consume_bot_mention_reply_quota(self, message: discord.Message) -> bool:
+        channel_id = getattr(getattr(message, "channel", None), "id", None)
+        if channel_id is None:
+            return False
+
+        limit_config = getattr(
+            chat_config,
+            "BOT_MENTION_REPLY_LIMIT",
+            {"WINDOW_SECONDS": 600, "MAX_COUNT": 5},
+        )
+        window_seconds = max(int(limit_config.get("WINDOW_SECONDS", 600) or 600), 1)
+        max_count = max(int(limit_config.get("MAX_COUNT", 5) or 5), 1)
+        now = time.monotonic()
+
+        window_started_at, current_count = self._bot_mention_reply_windows.get(
+            channel_id, (now, 0)
+        )
+        if now - window_started_at >= window_seconds:
+            window_started_at = now
+            current_count = 0
+
+        if current_count >= max_count:
+            return False
+
+        self._bot_mention_reply_windows[channel_id] = (
+            window_started_at,
+            current_count + 1,
+        )
+        return True
 
     @asynccontextmanager
     async def _best_effort_typing(self, channel: discord.abc.Messageable):
@@ -579,15 +611,24 @@ class AIChatCog(commands.Cog):
         if not CHAT_ENABLED:
             return
 
+        is_dm = message.guild is None
+        is_mentioned = bool(self.bot.user and self.bot.user in message.mentions)
+
         if message.author.bot:
-            return
+            if is_dm or not is_mentioned:
+                return
+            if not self._consume_bot_mention_reply_quota(message):
+                log.info(
+                    "机器人艾特回复已命中频率限制，忽略本次消息 | channel_id=%s | author_id=%s",
+                    getattr(getattr(message, "channel", None), "id", None),
+                    getattr(getattr(message, "author", None), "id", None),
+                )
+                return
 
         processed_data = await message_processor.process_message(message, self.bot)
         if processed_data is None:
             return
 
-        is_dm = message.guild is None
-        is_mentioned = self.bot.user in message.mentions
         if not is_dm and not is_mentioned:
             return
 
