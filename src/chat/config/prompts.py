@@ -226,7 +226,7 @@ PROMPT_CONFIG = {
 </system_info>
 """,
     },
-    "deepseek-v4-pro,custom-deepseek-expert-reasoner,custom-deepseek-expert-reasoner-search,custom-deepseek/deepseek-v4-pro": {
+    "deepseek-v4-pro,custom-deepseek-expert-reasoner,custom-deepseek-v4-pro-search,custom-deepseek/deepseek-v4-pro": {
         "SYSTEM_PROMPT": """
 <core_identity>
 名称: 神所娘
