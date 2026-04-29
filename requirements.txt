@@ -16,6 +16,7 @@ apscheduler
 SQLAlchemy
 asyncpg
 pgvector
+openai
 alembic
 gradio_client
 

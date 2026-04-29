@@ -203,7 +203,7 @@ MESSAGE_SETTINGS = {
 # 允许响应其他机器人对当前机器人的 @mention，但为避免机器人互相循环，
 # 在同一频道内按固定时间窗口限流。
 BOT_MENTION_REPLY_LIMIT = {
-    "WINDOW_SECONDS": 600,
+    "WINDOW_SECONDS": 300,
     "MAX_COUNT": 5,
 }
 
