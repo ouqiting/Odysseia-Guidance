@@ -5,41 +5,51 @@ from .base_panel import BasePanel
 
 
 class DailyPanel(BasePanel):
+    @staticmethod
+    def _build_reply_stats_text(total_replies: int, day_label: str) -> str:
+        if total_replies == 0:
+            return f"{day_label}神所娘还什么都没聊!"
+
+        # 700 / 500 / 300 / 200 四个断点先接入，文案保持原样。
+        if total_replies >= 700:
+            comment = "聊了这么多！我们是把一年的话都说完了吗？"
+        elif total_replies >= 500:
+            comment = "哇！今天是个话痨日！大家的热情像太阳一样！"
+        elif total_replies >= 300:
+            comment = "聊得不错嘛！今天也是活力满满的一天！"
+        elif total_replies >= 200:
+            comment = "今天有点安静呢，是不是大家都在忙呀？"
+        else:
+            comment = "今天有点安静呢，是不是大家都在忙呀？"
+
+        return (
+            f"{day_label}神所娘一共回复了 **{total_replies}** 句话！\n"
+            f"_{comment.replace('今天', day_label)}_"
+        )
+
     async def create_embed(self) -> discord.Embed:
         embed = discord.Embed(
-            title="📅 类脑娘日报",
-            description="欢迎查看今日类脑娘日报！",
+            title="📅 神所娘日报",
+            description="欢迎查看今日神所娘日报！",
             color=discord.Color.blue(),
         )
 
         try:
-            # 获取今天的模型使用数据
-            usage_today = await chat_db_manager.get_model_usage_counts_today()
+            total_replies_today = await chat_db_manager.get_total_reply_count_today()
+            total_replies_yesterday = (
+                await chat_db_manager.get_total_reply_count_yesterday()
+            )
 
-            if not usage_today:
-                embed.add_field(
-                    name="今天类脑娘回了...",
-                    value="今天类脑娘还什么都没聊!",
-                    inline=False,
-                )
-            else:
-                total_replies_today = sum(row["usage_count"] for row in usage_today)
-
-                if total_replies_today < 500:
-                    comment = "今天有点安静呢，是不是大家都在忙呀？"
-                elif 500 <= total_replies_today < 1000:
-                    comment = "聊得不错嘛！今天也是活力满满的一天！"
-                elif 1000 <= total_replies_today < 3000:
-                    comment = "哇！今天是个话痨日！大家的热情像太阳一样！"
-                else:
-                    comment = "聊了这么多！我们是把一年的话都说完了吗？"
-
-                stats_text = (
-                    f"类脑娘今天一共回复了 **{total_replies_today}** 句话！\n"
-                    f"_{comment}_"
-                )
-
-                embed.add_field(name="今日回复统计", value=stats_text, inline=False)
+            embed.add_field(
+                name="今日回复统计",
+                value=self._build_reply_stats_text(total_replies_today, "今天"),
+                inline=False,
+            )
+            embed.add_field(
+                name="昨日回复统计",
+                value=self._build_reply_stats_text(total_replies_yesterday, "昨天"),
+                inline=False,
+            )
 
             # --- 获取并显示今日打工次数 ---
             total_work_count = await chat_db_manager.get_total_work_count_today()
@@ -96,7 +106,7 @@ class DailyPanel(BasePanel):
             
             # 玩家视角的净盈亏 (正数=玩家赢, 负数=玩家输)
             player_net_profit = blackjack_net + ghost_net
-            # 类脑娘视角的净盈亏 (相反数)
+            # 神所娘视角的净盈亏 (相反数)
             casino_profit = -player_net_profit
 
             if casino_profit > 1000:
@@ -137,7 +147,7 @@ class DailyPanel(BasePanel):
                 warning_comment = "今天社区里一派祥和，真是美好的一天！"
                 warning_stats_text = f"_{warning_comment}_"
 
-            embed.add_field(name="类脑娘出动", value=warning_stats_text, inline=False)
+            embed.add_field(name="神所娘出动", value=warning_stats_text, inline=False)
 
             # --- 获取并显示今日忏悔次数 ---
             confession_count = await chat_db_manager.get_confession_count_today()
@@ -189,23 +199,6 @@ class DailyPanel(BasePanel):
                 )
             tarot_stats_text = f"今日进行了 **{tarot_reading_count}** 次塔罗牌占卜。\n_{tarot_comment}_"
             embed.add_field(name="星辰指引", value=tarot_stats_text, inline=False)
-
-            # --- 获取并显示今日论坛搜索次数 ---
-            forum_search_count = await chat_db_manager.get_forum_search_count_today()
-            if forum_search_count == 0:
-                forum_comment = "今天论坛好安静呀，都没有人找我搜东西。"
-            elif forum_search_count <= 10:
-                forum_comment = "帮大家找到了一些想要的东西，嘿嘿，不用谢！"
-            elif forum_search_count <= 20:
-                forum_comment = "今天我也是个勤劳的看板娘！"
-            elif forum_search_count <= 30:
-                forum_comment = "好！今天也帮大家解决了很多问题！"
-            elif forum_search_count <= 40:
-                forum_comment = "哇！帮你们搜了好多色色的东西,你们真的是!"
-            else:
-                forum_comment = "感觉整个论坛的资源都被你们翻了个底朝天！"
-            forum_stats_text = f"今日我帮大家找到了 **{forum_search_count}** 次资源。\n_{forum_comment}_"
-            embed.add_field(name="资源检索", value=forum_stats_text, inline=False)
 
         except Exception as e:
             embed.add_field(

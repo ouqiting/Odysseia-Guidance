@@ -5,7 +5,7 @@ import os
 import asyncio
 from functools import partial
 from typing import Optional, List, Dict, Any, Callable, Tuple
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from src.chat.config import chat_config
 
 # --- 常量定义 ---
@@ -23,6 +23,13 @@ def get_beijing_today_str() -> str:
     """获取北京时间（UTC+8）的当前日期字符串，格式为 YYYY-MM-DD。"""
     beijing_tz = timezone(timedelta(hours=8))
     return datetime.now(beijing_tz).strftime("%Y-%m-%d")
+
+
+def get_beijing_relative_date_str(days_offset: int) -> str:
+    """返回北京时间相对今天偏移若干天后的日期字符串。"""
+    beijing_tz = timezone(timedelta(hours=8))
+    target_date = datetime.now(beijing_tz).date() + timedelta(days=days_offset)
+    return target_date.isoformat()
 
 
 class ChatDatabaseManager:
@@ -457,6 +464,16 @@ class ChatDatabaseManager:
                 );
             """)
 
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS daily_reply_snapshot (
+                    snapshot_id INTEGER PRIMARY KEY CHECK (snapshot_id = 1),
+                    current_date TEXT NOT NULL,
+                    current_reply_count INTEGER NOT NULL DEFAULT 0,
+                    yesterday_date TEXT,
+                    yesterday_reply_count INTEGER NOT NULL DEFAULT 0
+                );
+            """)
+
             # --- 年度总结日志表 ---
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS yearly_summary_log (
@@ -482,8 +499,7 @@ class ChatDatabaseManager:
                     issue_user_warning_count INTEGER NOT NULL DEFAULT 0,
                     confession_count INTEGER NOT NULL DEFAULT 0,
                     feeding_count INTEGER NOT NULL DEFAULT 0,
-                    tarot_reading_count INTEGER NOT NULL DEFAULT 0,
-                    forum_search_count INTEGER NOT NULL DEFAULT 0
+                    tarot_reading_count INTEGER NOT NULL DEFAULT 0
                 );
             """)
 
@@ -1274,6 +1290,78 @@ class ChatDatabaseManager:
         return False
 
     # --- AI模型使用计数 ---
+    def _increment_daily_reply_snapshot_transaction(self, today_date_str: str) -> None:
+        """更新今天/昨天的回复总数快照，只保留这两天。"""
+        conn = None
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            row = cursor.execute(
+                """
+                SELECT current_date, current_reply_count, yesterday_date, yesterday_reply_count
+                FROM daily_reply_snapshot
+                WHERE snapshot_id = 1
+                """
+            ).fetchone()
+
+            if row is None:
+                cursor.execute(
+                    """
+                    INSERT INTO daily_reply_snapshot (
+                        snapshot_id, current_date, current_reply_count,
+                        yesterday_date, yesterday_reply_count
+                    ) VALUES (1, ?, 1, NULL, 0)
+                    """,
+                    (today_date_str,),
+                )
+                conn.commit()
+                return
+
+            current_date_str = row["current_date"]
+            if current_date_str == today_date_str:
+                cursor.execute(
+                    """
+                    UPDATE daily_reply_snapshot
+                    SET current_reply_count = current_reply_count + 1
+                    WHERE snapshot_id = 1
+                    """
+                )
+                conn.commit()
+                return
+
+            current_date_obj = date.fromisoformat(current_date_str)
+            today_date_obj = date.fromisoformat(today_date_str)
+            expected_yesterday = today_date_obj - timedelta(days=1)
+
+            if current_date_obj == expected_yesterday:
+                yesterday_date_str = current_date_str
+                yesterday_reply_count = row["current_reply_count"]
+            else:
+                yesterday_date_str = expected_yesterday.isoformat()
+                yesterday_reply_count = 0
+
+            cursor.execute(
+                """
+                UPDATE daily_reply_snapshot
+                SET current_date = ?,
+                    current_reply_count = 1,
+                    yesterday_date = ?,
+                    yesterday_reply_count = ?
+                WHERE snapshot_id = 1
+                """,
+                (today_date_str, yesterday_date_str, yesterday_reply_count),
+            )
+            conn.commit()
+        except sqlite3.Error:
+            if conn:
+                conn.rollback()
+            raise
+        finally:
+            if conn:
+                conn.close()
+
     async def increment_model_usage(self, model_name: str) -> None:
         """为一个模型增加累计和每日使用次数。"""
         # 增加总数
@@ -1298,6 +1386,9 @@ class ChatDatabaseManager:
         await self._execute(
             self._db_transaction, query_daily, (model_name, today_date_str), commit=True
         )
+        await self._execute(
+            self._increment_daily_reply_snapshot_transaction, today_date_str
+        )
 
     async def get_model_usage_counts(self) -> List[sqlite3.Row]:
         """获取所有模型累计的使用次数。"""
@@ -1313,6 +1404,36 @@ class ChatDatabaseManager:
         return await self._execute(
             self._db_transaction, query, (today_date_str,), fetch="all"
         )
+
+    async def get_total_reply_count_today(self) -> int:
+        """获取今天的回复总数。"""
+        today_date_str = get_beijing_today_str()
+        query = """
+            SELECT current_date, current_reply_count
+            FROM daily_reply_snapshot
+            WHERE snapshot_id = 1
+        """
+        result = await self._execute(self._db_transaction, query, fetch="one")
+        if result and result["current_date"] == today_date_str:
+            return result["current_reply_count"]
+        return 0
+
+    async def get_total_reply_count_yesterday(self) -> int:
+        """获取昨天的回复总数。"""
+        yesterday_date_str = get_beijing_relative_date_str(-1)
+        query = """
+            SELECT current_date, current_reply_count, yesterday_date, yesterday_reply_count
+            FROM daily_reply_snapshot
+            WHERE snapshot_id = 1
+        """
+        result = await self._execute(self._db_transaction, query, fetch="one")
+        if not result:
+            return 0
+        if result["current_date"] == yesterday_date_str:
+            return result["current_reply_count"]
+        if result["yesterday_date"] == yesterday_date_str:
+            return result["yesterday_reply_count"]
+        return 0
 
     async def get_total_work_count_today(self) -> int:
         """获取今天所有用户的总打工次数。"""
