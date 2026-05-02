@@ -1405,35 +1405,27 @@ class ChatDatabaseManager:
             self._db_transaction, query, (today_date_str,), fetch="all"
         )
 
+    async def _get_total_reply_count_for_date(self, target_date_str: str) -> int:
+        """按日期汇总所有模型的使用次数，作为日报中的回复总数。"""
+        query = """
+            SELECT COALESCE(SUM(usage_count), 0) AS total
+            FROM daily_model_usage
+            WHERE usage_date = ?
+        """
+        result = await self._execute(
+            self._db_transaction, query, (target_date_str,), fetch="one"
+        )
+        return result["total"] if result and result["total"] is not None else 0
+
     async def get_total_reply_count_today(self) -> int:
         """获取今天的回复总数。"""
         today_date_str = get_beijing_today_str()
-        query = """
-            SELECT current_date, current_reply_count
-            FROM daily_reply_snapshot
-            WHERE snapshot_id = 1
-        """
-        result = await self._execute(self._db_transaction, query, fetch="one")
-        if result and result["current_date"] == today_date_str:
-            return result["current_reply_count"]
-        return 0
+        return await self._get_total_reply_count_for_date(today_date_str)
 
     async def get_total_reply_count_yesterday(self) -> int:
         """获取昨天的回复总数。"""
         yesterday_date_str = get_beijing_relative_date_str(-1)
-        query = """
-            SELECT current_date, current_reply_count, yesterday_date, yesterday_reply_count
-            FROM daily_reply_snapshot
-            WHERE snapshot_id = 1
-        """
-        result = await self._execute(self._db_transaction, query, fetch="one")
-        if not result:
-            return 0
-        if result["current_date"] == yesterday_date_str:
-            return result["current_reply_count"]
-        if result["yesterday_date"] == yesterday_date_str:
-            return result["yesterday_reply_count"]
-        return 0
+        return await self._get_total_reply_count_for_date(yesterday_date_str)
 
     async def get_total_work_count_today(self) -> int:
         """获取今天所有用户的总打工次数。"""
