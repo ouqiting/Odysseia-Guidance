@@ -48,120 +48,98 @@ class DeepSeekModelClient:
             "data_preview": image_bytes.hex(),
         }
 
-    async def build_turn_content(self, parts: List[Any]) -> str:
+    @staticmethod
+    def _is_supported_image_format(mime_type: str) -> bool:
+        """检查是否为支持的图片格式（排除 gif 和视频）。"""
+        if not mime_type:
+            return False
+        lower = mime_type.lower()
+        if lower.startswith("video/"):
+            return False
+        if lower == "image/gif":
+            return False
+        return True
+
+    def build_turn_content(self, parts: List[Any]) -> List[Dict[str, Any]]:
         """
-        构建单条消息在 DeepSeek 通道中的文本内容。
-
-        对于图片，调用 Moonshot 进行识别，并将所有【图片识别结果】统一追加到该条消息文本末尾，
-        避免当图片（例如表情/贴纸）出现在文本前方时，OCR 结果抢占 content 开头。
+        构建 DeepSeek 多模态单条消息 content。
+        直接把图片作为 image_url(data URI) 发给模型，不做 OCR。
+        仅支持静态图片，过滤 gif 和视频。
         """
-        content_chunks: List[str] = []
-        vision_chunks: List[str] = []
-
-        # 额外注入“当前用户输入”到识图请求中（放在图片前），帮助视觉模型理解提问意图：
-        # - 只传入输入本身，不包含“上下文提示/引用回复”等前缀
-        # - 若该轮只有图片（无文本输入），则不注入
-        user_input_text_for_vision: Optional[str] = None
-        try:
-            text_fragments: List[str] = []
-            for part in parts or []:
-                if hasattr(part, "thought") and getattr(part, "thought", False):
-                    continue
-
-                if isinstance(part, Image.Image) or (
-                    isinstance(part, dict) and part.get("type") == "image"
-                ):
-                    continue
-
-                if isinstance(part, dict) and isinstance(part.get("text"), str):
-                    text_fragments.append(part["text"])
-                else:
-                    text_fragments.append(str(part))
-
-            combined_text_for_vision = "".join(text_fragments).strip()
-            if combined_text_for_vision:
-                marker = "以下是当前输入内容:"
-                candidate = (
-                    combined_text_for_vision.split(marker, 1)[-1].strip()
-                    if marker in combined_text_for_vision
-                    else combined_text_for_vision
-                )
-
-                matches = list(re.finditer(r"\[[^\]]+\]:(?:\s*)", candidate))
-                if matches:
-                    candidate = candidate[matches[-1].end() :].strip()
-                    if candidate and "用户消息:(图片消息)" not in candidate:
-                        user_input_text_for_vision = candidate
-        except Exception:
-            user_input_text_for_vision = None
-
-        first_effective_part_seen = False
-        first_effective_part_is_image = False
+        content_blocks: List[Dict[str, Any]] = []
 
         for part in parts or []:
             if hasattr(part, "thought") and getattr(part, "thought", False):
                 continue
 
-            if not first_effective_part_seen:
-                first_effective_part_seen = True
-                first_effective_part_is_image = isinstance(part, Image.Image) or (
-                    isinstance(part, dict) and part.get("type") == "image"
-                )
-
             if isinstance(part, dict) and isinstance(part.get("text"), str):
-                content_chunks.append(part["text"])
+                text_value = part["text"].strip()
+                if text_value:
+                    content_blocks.append({"type": "text", "text": text_value})
                 continue
 
             if isinstance(part, Image.Image):
-                try:
-                    image_payload = self._build_moonshot_image_payload_from_pil(part)
-                    vision_text = await moonshot_vision_service.recognize_image(
-                        image_payload,
-                        user_input_text=user_input_text_for_vision,
-                    )
-                except Exception as e:
-                    log.error("Moonshot 图片识别流程异常: %s", e, exc_info=True)
-                    vision_text = "（图片识别失败：处理流程异常）"
-
-                vision_chunks.append(str(vision_text))
+                buffered = io.BytesIO()
+                part.save(buffered, format="PNG")
+                image_bytes = buffered.getvalue()
+                image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+                content_blocks.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{image_b64}"},
+                    }
+                )
                 continue
 
             if isinstance(part, dict) and part.get("type") == "image":
-                try:
-                    vision_text = await moonshot_vision_service.recognize_image(
-                        part,
-                        user_input_text=user_input_text_for_vision,
+                mime_type = str(part.get("mime_type", "image/png"))
+
+                if not self._is_supported_image_format(mime_type):
+                    log.info("[DeepSeek] 跳过不支持的图片格式: %s", mime_type)
+                    continue
+
+                image_bytes: Optional[bytes] = None
+
+                direct_bytes = part.get("data") or part.get("bytes")
+                if isinstance(direct_bytes, (bytes, bytearray)):
+                    image_bytes = bytes(direct_bytes)
+
+                if image_bytes is None:
+                    image_base64 = part.get("image_base64")
+                    if isinstance(image_base64, str) and image_base64.strip():
+                        try:
+                            image_bytes = base64.b64decode(image_base64)
+                        except Exception:
+                            image_bytes = None
+
+                if image_bytes is None:
+                    data_preview = part.get("data_preview")
+                    if isinstance(data_preview, str) and data_preview.strip():
+                        try:
+                            image_bytes = bytes.fromhex(data_preview.strip())
+                        except Exception:
+                            try:
+                                image_bytes = base64.b64decode(data_preview.strip())
+                            except Exception:
+                                image_bytes = None
+
+                if image_bytes:
+                    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+                    content_blocks.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime_type};base64,{image_b64}"},
+                        }
                     )
-                except Exception as e:
-                    log.error("Moonshot 图片字典识别异常: %s", e, exc_info=True)
-                    vision_text = "（图片识别失败：处理流程异常）"
-
-                vision_chunks.append(str(vision_text))
+                else:
+                    content_blocks.append({"type": "text", "text": "（收到一张图片，但解析失败）"})
                 continue
 
-            content_chunks.append(str(part))
+            fallback_text = str(part).strip()
+            if fallback_text:
+                content_blocks.append({"type": "text", "text": fallback_text})
 
-        base_text = "".join(content_chunks).strip()
-
-        vision_items: List[str] = []
-        for vision_text in vision_chunks:
-            cleaned = str(vision_text).strip()
-            if not cleaned:
-                continue
-            vision_items.append(f"【图片识别结果】{cleaned}")
-
-        if not vision_items:
-            return base_text
-
-        ocr_text = "   ".join(vision_items)
-
-        if not base_text:
-            return ocr_text
-
-        combined = f"{base_text}   {ocr_text}"
-        if first_effective_part_is_image:
-            combined = "\n" + combined
-        return combined
+        return content_blocks
 
     async def post_process_tool_response(self, raw_response: Any) -> Any:
         """

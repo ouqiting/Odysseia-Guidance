@@ -18,6 +18,10 @@ from src.chat.config import chat_config as app_config
 from src.chat.features.chat_settings.services.chat_settings_service import chat_settings_service
 from src.chat.features.tools.services.tool_service import ToolService
 from src.chat.services.kimi_key_rotation import NoAvailableKimiKeyError
+from src.chat.services.tool_intent_service import (
+    extract_function_tool_names,
+    resolve_proactive_tool_choice,
+)
 from src.chat.services.openai_models import (
     CustomModelClient,
     DeepSeekModelClient,
@@ -1089,19 +1093,12 @@ class OpenAIService:
         for turn in final_conversation:
             gemini_role = turn.get("role")
 
-            # DeepSeek / Custom(开启识图)：沿用 OCR 拼接为纯文本
-            if is_deepseek_model or (
-                is_custom_model and custom_vision_enabled
-            ):
-                if is_deepseek_model:
-                    content = await self.deepseek_model_client.build_turn_content(
-                        turn.get("parts", []) or []
-                    )
-                else:
-                    content = await self.custom_model_client.build_turn_content(
-                        turn.get("parts", []) or [],
-                        enable_vision=custom_vision_enabled,
-                    )
+            # Custom(开启识图)：沿用 OCR 拼接为纯文本
+            if is_custom_model and custom_vision_enabled:
+                content = await self.custom_model_client.build_turn_content(
+                    turn.get("parts", []) or [],
+                    enable_vision=custom_vision_enabled,
+                )
 
                 if not content:
                     continue
@@ -1116,10 +1113,15 @@ class OpenAIService:
                         openai_messages.append({"role": "user", "content": content})
                 continue
 
-            # Kimi / Custom：直接发送多模态 content block（图片直传，不走 Moonshot OCR）
-            content_blocks = self.kimi_model_client.build_turn_content(
-                turn.get("parts", []) or []
-            )
+            # Kimi / DeepSeek / Custom：直接发送多模态 content block（图片直传，不走 Moonshot OCR）
+            if is_deepseek_model:
+                content_blocks = await self.deepseek_model_client.build_turn_content(
+                    turn.get("parts", []) or []
+                )
+            else:
+                content_blocks = self.kimi_model_client.build_turn_content(
+                    turn.get("parts", []) or []
+                )
             if not content_blocks:
                 continue
 
@@ -1348,14 +1350,28 @@ class OpenAIService:
                     "max_tokens": gen_config.get("max_output_tokens", 8192),
                 }
 
+                proactive_tool_choice = resolve_proactive_tool_choice(
+                    message,
+                    extract_function_tool_names(openai_tools),
+                )
+                if proactive_tool_choice:
+                    log.info(
+                        "[%s] 已根据用户消息命中主动工具调用意图，强制指定工具: %s",
+                        channel_label,
+                        proactive_tool_choice["function"]["name"],
+                    )
+
                 if is_kimi_model:
                     payload["thinking"] = {"type": "disabled"}
 
                 if is_deepseek_model or is_custom_model:
                     if openai_tools:
                         payload["tools"] = openai_tools
-                        if is_custom_model:
+                        if proactive_tool_choice:
+                            payload["tool_choice"] = proactive_tool_choice
+                        elif is_custom_model:
                             payload["tool_choice"] = "auto"
+                        if is_custom_model:
                             payload["parallel_tool_calls"] = True
                 elif is_kimi_model:
                     kimi_request_tools: List[Dict[str, Any]] = []
