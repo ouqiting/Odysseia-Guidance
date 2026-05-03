@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Any, Dict, List, Tuple
 
 import httpx
@@ -15,10 +16,11 @@ log = logging.getLogger(__name__)
 SEARCH_API_BASE_URL = "https://ai-gateway.vercel.sh/v1"
 SEARCH_API_URL = f"{SEARCH_API_BASE_URL}/responses"
 SEARCH_MODEL_NAME = "openai/gpt-5.4-mini"
-SEARCH_TIMEOUT_SECONDS = 180.0
+SEARCH_TIMEOUT_SECONDS = 25.0
 SEARCH_INCLUDE_FIELDS = ["web_search_call.action.sources"]
 GROK_MODEL_NAME = "grok-4.20-fast"
 GROK_MAX_RETRIES = 3
+GROK_TOTAL_TIMEOUT_SECONDS = 25.0
 SEARCH_TOOL_INSTRUCTIONS = """
 你是一个联网检索助手。
 
@@ -366,9 +368,28 @@ async def _search_with_grok(clean_question: str) -> Dict[str, Any]:
     }
 
     last_error = ""
+    started_at = time.monotonic()
     for attempt in range(1, GROK_MAX_RETRIES + 2):
+        elapsed_seconds = time.monotonic() - started_at
+        remaining_seconds = GROK_TOTAL_TIMEOUT_SECONDS - elapsed_seconds
+        if remaining_seconds <= 0:
+            last_error = (
+                f"Grok 通道总超时，已超过 {GROK_TOTAL_TIMEOUT_SECONDS:.0f} 秒。"
+            )
+            log.error("[WebSearchTool][Grok] %s", last_error)
+            return {
+                "channel": "grok",
+                "enabled": True,
+                "search_executed": False,
+                "model": GROK_MODEL_NAME,
+                "error": "Grok 通道请求超时，已自动放弃。",
+                "detail": last_error,
+                "attempts": max(attempt - 1, 0),
+            }
+
         try:
-            async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT_SECONDS) as client:
+            timeout_seconds = min(SEARCH_TIMEOUT_SECONDS, remaining_seconds)
+            async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 response = await client.post(
                     grok_url,
                     headers=headers,
@@ -424,6 +445,23 @@ async def _search_with_grok(clean_question: str) -> Dict[str, Any]:
         except Exception as exc:
             if not last_error:
                 last_error = str(exc)
+
+            elapsed_seconds = time.monotonic() - started_at
+            if elapsed_seconds >= GROK_TOTAL_TIMEOUT_SECONDS:
+                last_error = (
+                    f"{last_error} | Grok 通道总超时，已超过 "
+                    f"{GROK_TOTAL_TIMEOUT_SECONDS:.0f} 秒。"
+                )
+                log.error("[WebSearchTool][Grok] %s", last_error)
+                return {
+                    "channel": "grok",
+                    "enabled": True,
+                    "search_executed": False,
+                    "model": GROK_MODEL_NAME,
+                    "error": "Grok 通道请求超时，已自动放弃。",
+                    "detail": last_error,
+                    "attempts": attempt,
+                }
 
             if attempt <= GROK_MAX_RETRIES:
                 log.warning(
