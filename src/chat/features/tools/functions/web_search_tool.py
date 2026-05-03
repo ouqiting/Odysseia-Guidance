@@ -178,6 +178,47 @@ def _extract_chat_completion_text(data: Dict[str, Any]) -> str:
     return ""
 
 
+def _extract_chat_completion_text_from_sse_body(body: str) -> str:
+    chunks: List[str] = []
+
+    for raw_line in str(body or "").splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+
+        payload = line[5:].strip()
+        if not payload or payload == "[DONE]":
+            continue
+
+        try:
+            data = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+
+        choices = data.get("choices", []) or []
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+
+            content = delta.get("content")
+            if isinstance(content, str) and content:
+                chunks.append(content)
+                continue
+
+            if isinstance(content, list):
+                for item in content:
+                    if isinstance(item, dict) and item.get("type") == "text":
+                        text = str(item.get("text") or "")
+                        if text:
+                            chunks.append(text)
+
+    return "".join(chunks).strip()
+
+
 def _has_web_search_call(data: Dict[str, Any]) -> bool:
     for item in data.get("output", []) or []:
         if isinstance(item, dict) and item.get("type") == "web_search_call":
@@ -317,6 +358,7 @@ async def _search_with_grok(clean_question: str) -> Dict[str, Any]:
     }
     payload: Dict[str, Any] = {
         "model": GROK_MODEL_NAME,
+        "stream": False,
         "messages": [
             {"role": "system", "content": GROK_SEARCH_INSTRUCTIONS},
             {"role": "user", "content": clean_question},
@@ -346,6 +388,21 @@ async def _search_with_grok(clean_question: str) -> Dict[str, Any]:
             try:
                 data = response.json()
             except json.JSONDecodeError as exc:
+                sse_answer_text = _extract_chat_completion_text_from_sse_body(
+                    response.text or ""
+                )
+                if sse_answer_text:
+                    return {
+                        "channel": "grok",
+                        "enabled": True,
+                        "search_executed": False,
+                        "model": GROK_MODEL_NAME,
+                        "answer": sse_answer_text,
+                        "sources": [],
+                        "attempts": attempt,
+                        "response_format": "sse",
+                    }
+
                 last_error = (response.text or "<empty>")[:2000]
                 raise ValueError("Grok 返回了非 JSON 响应。") from exc
 
@@ -362,6 +419,7 @@ async def _search_with_grok(clean_question: str) -> Dict[str, Any]:
                 "answer": answer_text,
                 "sources": [],
                 "attempts": attempt,
+                "response_format": "json",
             }
         except Exception as exc:
             if not last_error:
