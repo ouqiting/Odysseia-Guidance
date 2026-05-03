@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+import asyncio
 import json
 import logging
 import os
@@ -16,6 +17,8 @@ SEARCH_API_URL = f"{SEARCH_API_BASE_URL}/responses"
 SEARCH_MODEL_NAME = "openai/gpt-5.4-mini"
 SEARCH_TIMEOUT_SECONDS = 180.0
 SEARCH_INCLUDE_FIELDS = ["web_search_call.action.sources"]
+GROK_MODEL_NAME = "grok-4.20-fast"
+GROK_MAX_RETRIES = 3
 SEARCH_TOOL_INSTRUCTIONS = """
 你是一个联网检索助手。
 
@@ -29,6 +32,25 @@ SEARCH_TOOL_INSTRUCTIONS = """
 4. 如果搜索结果存在时效性或来源冲突，要明确说明。
 5. 不要编造来源；只引用实际搜索到的网址。
 """.strip()
+GROK_SEARCH_INSTRUCTIONS = """
+你是一个联网检索助手。
+
+要求：
+1. 回答语言使用简体中文。
+2. 输出必须整理清楚，按以下结构组织：
+   - 摘要
+   - 关键信息
+   - 参考来源
+3. 如果搜索结果存在时效性或来源冲突，要明确说明。
+4. 不要编造来源；如果没有明确来源，就直接说明来源不足。
+""".strip()
+
+
+def _build_chat_completions_url(base_url: str) -> str:
+    normalized = str(base_url or "").strip().rstrip("/")
+    if not normalized.endswith("/chat/completions"):
+        normalized += "/chat/completions"
+    return normalized
 
 
 def _dedupe_sources(sources: List[Tuple[str, str]]) -> List[Dict[str, str]]:
@@ -126,11 +148,246 @@ def _extract_answer_text(data: Dict[str, Any]) -> str:
     return "\n\n".join(chunks).strip()
 
 
+def _extract_chat_completion_text(data: Dict[str, Any]) -> str:
+    choices = data.get("choices", []) or []
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content.strip()
+            if text:
+                return text
+
+        if isinstance(content, list):
+            chunks: List[str] = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    text = str(item.get("text") or "").strip()
+                    if text:
+                        chunks.append(text)
+            joined = "\n".join(chunks).strip()
+            if joined:
+                return joined
+
+    return ""
+
+
 def _has_web_search_call(data: Dict[str, Any]) -> bool:
     for item in data.get("output", []) or []:
         if isinstance(item, dict) and item.get("type") == "web_search_call":
             return True
     return False
+
+
+def _is_grok_configured() -> bool:
+    grok_url = str(os.getenv("GROK_URL") or "").strip()
+    grok_api_key = str(os.getenv("GROK_API_KEY") or "").strip()
+    return bool(grok_url and grok_api_key)
+
+
+def _format_combined_answer(
+    *,
+    gpt_answer: str,
+    grok_answer: str,
+) -> str:
+    sections: List[str] = []
+
+    if gpt_answer:
+        sections.append(f"【GPT 联网搜索结果】\n{gpt_answer}")
+
+    if grok_answer:
+        sections.append(f"【Grok 辅助结果】\n{grok_answer}")
+
+    return "\n\n".join(section for section in sections if section).strip()
+
+
+async def _search_with_gpt(clean_question: str) -> Dict[str, Any]:
+    api_key = str(os.getenv("SEARCH_API_KEY") or "").strip()
+    if not api_key:
+        log.warning("[WebSearchTool] SEARCH_API_KEY 未配置。")
+        return {
+            "channel": "gpt",
+            "search_executed": False,
+            "error": "未配置 SEARCH_API_KEY，无法执行联网搜索。",
+        }
+
+    payload: Dict[str, Any] = {
+        "model": SEARCH_MODEL_NAME,
+        "instructions": SEARCH_TOOL_INSTRUCTIONS,
+        "input": clean_question,
+        "tools": [
+            {
+                "type": "web_search",
+                "external_web_access": True,
+            }
+        ],
+        "tool_choice": "required",
+        "include": list(SEARCH_INCLUDE_FIELDS),
+    }
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                SEARCH_API_URL,
+                headers=headers,
+                json=payload,
+            )
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        body_preview = exc.response.text[:2000] if exc.response is not None else ""
+        log.error(
+            "[WebSearchTool][GPT] HTTP 请求失败 | status=%s | body=%s",
+            exc.response.status_code if exc.response is not None else "N/A",
+            body_preview,
+        )
+        return {
+            "channel": "gpt",
+            "search_executed": False,
+            "error": f"联网搜索请求失败：HTTP {exc.response.status_code if exc.response is not None else 'N/A'}。",
+            "detail": body_preview or str(exc),
+        }
+    except httpx.RequestError as exc:
+        log.error("[WebSearchTool][GPT] 网络请求异常: %s", exc, exc_info=True)
+        return {
+            "channel": "gpt",
+            "search_executed": False,
+            "error": f"联网搜索网络异常：{type(exc).__name__}。",
+            "detail": str(exc),
+        }
+
+    try:
+        data = response.json()
+    except json.JSONDecodeError:
+        body_preview = response.text[:2000] if response.text else "<empty>"
+        log.error("[WebSearchTool][GPT] 响应不是 JSON: %s", body_preview)
+        return {
+            "channel": "gpt",
+            "search_executed": False,
+            "error": "联网搜索返回了非 JSON 响应。",
+            "detail": body_preview,
+        }
+
+    answer_text = _extract_answer_text(data)
+    sources = _extract_sources_from_response(data)
+    search_executed = _has_web_search_call(data)
+
+    result: Dict[str, Any] = {
+        "channel": "gpt",
+        "search_executed": search_executed,
+        "model": SEARCH_MODEL_NAME,
+        "answer": answer_text,
+        "sources": sources,
+    }
+
+    if not search_executed:
+        result["error"] = "模型本次响应中未实际触发 web_search 工具。"
+    elif not answer_text:
+        result["error"] = "联网搜索已执行，但未解析出整理后的正文。"
+
+    return result
+
+
+async def _search_with_grok(clean_question: str) -> Dict[str, Any]:
+    grok_base_url = str(os.getenv("GROK_URL") or "").strip()
+    grok_api_key = str(os.getenv("GROK_API_KEY") or "").strip()
+
+    if not grok_base_url or not grok_api_key:
+        return {
+            "channel": "grok",
+            "enabled": False,
+            "skipped": True,
+            "model": GROK_MODEL_NAME,
+        }
+
+    grok_url = _build_chat_completions_url(grok_base_url)
+    headers = {
+        "Authorization": f"Bearer {grok_api_key}",
+        "Content-Type": "application/json",
+    }
+    payload: Dict[str, Any] = {
+        "model": GROK_MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": GROK_SEARCH_INSTRUCTIONS},
+            {"role": "user", "content": clean_question},
+        ],
+    }
+
+    last_error = ""
+    for attempt in range(1, GROK_MAX_RETRIES + 2):
+        try:
+            async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    grok_url,
+                    headers=headers,
+                    json=payload,
+                )
+
+            if response.status_code != 200:
+                last_error = (
+                    f"HTTP {response.status_code}: {(response.text or '')[:2000]}"
+                ).strip()
+                raise httpx.HTTPStatusError(
+                    "Grok 请求返回非 200 状态码。",
+                    request=response.request,
+                    response=response,
+                )
+
+            try:
+                data = response.json()
+            except json.JSONDecodeError as exc:
+                last_error = (response.text or "<empty>")[:2000]
+                raise ValueError("Grok 返回了非 JSON 响应。") from exc
+
+            answer_text = _extract_chat_completion_text(data)
+            if not answer_text:
+                last_error = json.dumps(data, ensure_ascii=False)[:2000]
+                raise ValueError("Grok 响应中未解析出正文。")
+
+            return {
+                "channel": "grok",
+                "enabled": True,
+                "search_executed": False,
+                "model": GROK_MODEL_NAME,
+                "answer": answer_text,
+                "sources": [],
+                "attempts": attempt,
+            }
+        except Exception as exc:
+            if not last_error:
+                last_error = str(exc)
+
+            if attempt <= GROK_MAX_RETRIES:
+                log.warning(
+                    "[WebSearchTool][Grok] 第 %s 次请求失败，准备重试 | error=%s",
+                    attempt,
+                    last_error,
+                )
+                continue
+
+            log.error(
+                "[WebSearchTool][Grok] 请求失败，已达到最大重试次数 | error=%s",
+                last_error,
+            )
+            return {
+                "channel": "grok",
+                "enabled": True,
+                "search_executed": False,
+                "model": GROK_MODEL_NAME,
+                "error": "Grok 通道请求失败，已自动放弃。",
+                "detail": last_error,
+                "attempts": attempt,
+            }
 
 
 @tool_metadata(
@@ -170,87 +427,74 @@ async def search_web(question: str, **kwargs) -> Dict[str, Any]:
             "error": "搜索问题不能为空。",
         }
 
-    api_key = str(os.getenv("SEARCH_API_KEY") or "").strip()
-    if not api_key:
-        log.warning("[WebSearchTool] SEARCH_API_KEY 未配置。")
-        return {
-            "search_executed": False,
-            "error": "未配置 SEARCH_API_KEY，无法执行联网搜索。",
-        }
+    gpt_task = _search_with_gpt(clean_question)
+    grok_enabled = _is_grok_configured()
 
-    payload: Dict[str, Any] = {
-        "model": SEARCH_MODEL_NAME,
-        "instructions": SEARCH_TOOL_INSTRUCTIONS,
-        "input": clean_question,
-        "tools": [
-            {
-                "type": "web_search",
-                "external_web_access": True,
-            }
-        ],
-        "tool_choice": "required",
-        "include": list(SEARCH_INCLUDE_FIELDS),
-    }
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-
-    try:
-        async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                SEARCH_API_URL,
-                headers=headers,
-                json=payload,
-            )
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        body_preview = exc.response.text[:2000] if exc.response is not None else ""
-        log.error(
-            "[WebSearchTool] HTTP 请求失败 | status=%s | body=%s",
-            exc.response.status_code if exc.response is not None else "N/A",
-            body_preview,
+    if grok_enabled:
+        gpt_result, grok_result = await asyncio.gather(
+            gpt_task,
+            _search_with_grok(clean_question),
         )
-        return {
-            "search_executed": False,
-            "error": f"联网搜索请求失败：HTTP {exc.response.status_code if exc.response is not None else 'N/A'}。",
-            "detail": body_preview or str(exc),
-        }
-    except httpx.RequestError as exc:
-        log.error("[WebSearchTool] 网络请求异常: %s", exc, exc_info=True)
-        return {
-            "search_executed": False,
-            "error": f"联网搜索网络异常：{type(exc).__name__}。",
-            "detail": str(exc),
+    else:
+        gpt_result = await gpt_task
+        grok_result = {
+            "channel": "grok",
+            "enabled": False,
+            "skipped": True,
+            "model": GROK_MODEL_NAME,
         }
 
-    try:
-        data = response.json()
-    except json.JSONDecodeError:
-        body_preview = response.text[:2000] if response.text else "<empty>"
-        log.error("[WebSearchTool] 响应不是 JSON: %s", body_preview)
-        return {
-            "search_executed": False,
-            "error": "联网搜索返回了非 JSON 响应。",
-            "detail": body_preview,
-        }
+    gpt_answer = str(gpt_result.get("answer") or "").strip()
+    grok_answer = str(grok_result.get("answer") or "").strip()
+    combined_answer = _format_combined_answer(
+        gpt_answer=gpt_answer,
+        grok_answer=grok_answer,
+    )
 
-    answer_text = _extract_answer_text(data)
-    sources = _extract_sources_from_response(data)
-    search_executed = _has_web_search_call(data)
+    merged_sources_input: List[Tuple[str, str]] = []
+    for channel_result in [gpt_result, grok_result]:
+        for source in channel_result.get("sources", []) or []:
+            if not isinstance(source, dict):
+                continue
+            merged_sources_input.append(
+                (
+                    str(source.get("title") or "").strip(),
+                    str(source.get("url") or "").strip(),
+                )
+            )
+
+    warnings: List[str] = []
+    if grok_enabled and grok_result.get("error"):
+        warnings.append("Grok 通道失败，已自动忽略。")
 
     result: Dict[str, Any] = {
-        "search_executed": search_executed,
+        "search_executed": bool(gpt_result.get("search_executed")),
         "query": clean_question,
         "model": SEARCH_MODEL_NAME,
-        "answer": answer_text,
-        "sources": sources,
+        "models": [
+            SEARCH_MODEL_NAME,
+            *([GROK_MODEL_NAME] if grok_enabled else []),
+        ],
+        "answer": combined_answer or gpt_answer or grok_answer,
+        "sources": _dedupe_sources(merged_sources_input),
+        "channels": {
+            "gpt": gpt_result,
+            "grok": grok_result,
+        },
     }
 
-    if not search_executed:
-        result["error"] = "模型本次响应中未实际触发 web_search 工具。"
-    elif not answer_text:
-        result["error"] = "联网搜索已执行，但未解析出整理后的正文。"
+    if warnings:
+        result["warnings"] = warnings
+
+    if gpt_result.get("error") and not grok_answer:
+        result["error"] = str(gpt_result.get("error"))
+        if gpt_result.get("detail"):
+            result["detail"] = gpt_result.get("detail")
+    elif not combined_answer:
+        result["error"] = "联网搜索未返回可用内容。"
+    elif not gpt_result.get("search_executed"):
+        result["error"] = str(
+            gpt_result.get("error") or "GPT 通道本次未实际触发 web_search 工具。"
+        )
 
     return result
