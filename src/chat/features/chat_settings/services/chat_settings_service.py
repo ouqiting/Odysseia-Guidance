@@ -13,6 +13,8 @@ log = logging.getLogger(__name__)
 CUSTOM_MODEL_TIMEOUT_DETECTION_ENABLED_KEY = (
     "custom_model_timeout_detection_enabled"
 )
+FULL_CONTEXT_LOGGING_ENABLED_KEY = "full_context_logging_enabled"
+FINAL_REPLY_LOGGING_ENABLED_KEY = "final_reply_logging_enabled"
 
 
 def _normalize_global_boolean_toggle(
@@ -36,6 +38,18 @@ class ChatSettingsService:
 
     def __init__(self):
         self.db_manager = chat_db_manager
+
+    @staticmethod
+    def _default_full_context_logging_enabled() -> bool:
+        return bool(
+            app_config.DEBUG_CONFIG.get("LOG_FINAL_CONTEXT", False)
+            or app_config.DEBUG_CONFIG.get("LOG_AI_FULL_CONTEXT", False)
+            or app_config.DEBUG_CONFIG.get("LOG_DETAILED_GEMINI_PROCESS", False)
+        )
+
+    @staticmethod
+    def _default_final_reply_logging_enabled() -> bool:
+        return True
 
     async def set_entity_settings(
         self,
@@ -115,6 +129,82 @@ class ChatSettingsService:
         """设置机器人私信功能的全局开关。"""
         await self.db_manager.set_global_setting(
             "global_dm_enabled", "true" if enabled else "false"
+        )
+
+    async def get_full_context_logging_enabled(self) -> bool:
+        """获取“完整上下文”日志总开关。"""
+        try:
+            value = await self.db_manager.get_global_setting(
+                FULL_CONTEXT_LOGGING_ENABLED_KEY
+            )
+        except Exception as exc:
+            log.warning("读取完整上下文日志开关失败，按默认值处理: %s", exc)
+            return self._default_full_context_logging_enabled()
+        return _normalize_global_boolean_toggle(
+            value,
+            default=self._default_full_context_logging_enabled(),
+        )
+
+    def get_full_context_logging_enabled_sync(self) -> bool:
+        """同步获取“完整上下文”日志总开关。"""
+        getter = getattr(self.db_manager, "get_global_setting_sync", None)
+        if not callable(getter):
+            return self._default_full_context_logging_enabled()
+
+        try:
+            value = getter(FULL_CONTEXT_LOGGING_ENABLED_KEY)
+        except Exception as exc:
+            log.warning("同步读取完整上下文日志开关失败，按默认值处理: %s", exc)
+            return self._default_full_context_logging_enabled()
+
+        return _normalize_global_boolean_toggle(
+            value,
+            default=self._default_full_context_logging_enabled(),
+        )
+
+    async def set_full_context_logging_enabled(self, enabled: bool) -> None:
+        """设置“完整上下文”日志总开关。"""
+        await self.db_manager.set_global_setting(
+            FULL_CONTEXT_LOGGING_ENABLED_KEY,
+            "true" if enabled else "false",
+        )
+
+    async def get_final_reply_logging_enabled(self) -> bool:
+        """获取“最终回复”日志总开关。"""
+        try:
+            value = await self.db_manager.get_global_setting(
+                FINAL_REPLY_LOGGING_ENABLED_KEY
+            )
+        except Exception as exc:
+            log.warning("读取最终回复日志开关失败，按默认值处理: %s", exc)
+            return self._default_final_reply_logging_enabled()
+        return _normalize_global_boolean_toggle(
+            value,
+            default=self._default_final_reply_logging_enabled(),
+        )
+
+    def get_final_reply_logging_enabled_sync(self) -> bool:
+        """同步获取“最终回复”日志总开关。"""
+        getter = getattr(self.db_manager, "get_global_setting_sync", None)
+        if not callable(getter):
+            return self._default_final_reply_logging_enabled()
+
+        try:
+            value = getter(FINAL_REPLY_LOGGING_ENABLED_KEY)
+        except Exception as exc:
+            log.warning("同步读取最终回复日志开关失败，按默认值处理: %s", exc)
+            return self._default_final_reply_logging_enabled()
+
+        return _normalize_global_boolean_toggle(
+            value,
+            default=self._default_final_reply_logging_enabled(),
+        )
+
+    async def set_final_reply_logging_enabled(self, enabled: bool) -> None:
+        """设置“最终回复”日志总开关。"""
+        await self.db_manager.set_global_setting(
+            FINAL_REPLY_LOGGING_ENABLED_KEY,
+            "true" if enabled else "false",
         )
 
     async def get_custom_model_timeout_detection_enabled(self) -> bool:

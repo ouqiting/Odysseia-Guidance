@@ -1252,7 +1252,7 @@ class GeminiService:
         # 4. 准备初始对话历史
         conversation_history = self._prepare_api_contents(final_conversation)
 
-        if app_config.DEBUG_CONFIG["LOG_AI_FULL_CONTEXT"]:
+        if await chat_settings_service.get_full_context_logging_enabled():
             log.info(f"--- 初始 AI 上下文 (用户 {user_id}) ---")
             log.info(
                 json.dumps(
@@ -1869,7 +1869,7 @@ class GeminiService:
         )
         final_model_name = self.default_model_name
 
-        if app_config.DEBUG_CONFIG["LOG_AI_FULL_CONTEXT"]:
+        if await chat_settings_service.get_full_context_logging_enabled():
             log.info("--- 忏悔功能 · 完整 AI 上下文 ---")
             log.info(prompt)
             log.info("------------------------------------")

@@ -35,6 +35,7 @@ from src.chat.features.chat_settings.ui.custom_model_config_view import (
 from src.chat.features.chat_settings.ui.ai_reply_regex_settings_view import (
     AIReplyRegexSettingsView,
 )
+from src.chat.features.chat_settings.ui.log_settings_view import LogSettingsView
 
 _GLOBAL_TTS_MODE_KEY = "global_tts_mode"
 _TTS_MODE_LEGACY = "legacy"  # tts_tool (edge_tts)
@@ -297,6 +298,14 @@ class ChatSettingsView(View):
                 row=4,
             )
         )
+        self.add_item(
+            Button(
+                label="日志设置",
+                style=ButtonStyle.secondary,
+                custom_id="log_settings",
+                row=4,
+            )
+        )
 
     async def _update_view(self, interaction: Interaction):
         """通过编辑附加的消息来刷新视图。"""
@@ -334,6 +343,8 @@ class ChatSettingsView(View):
             await self.on_vercel_gateway_settings(interaction)
         elif custom_id == "regex_settings":
             await self.on_regex_settings(interaction)
+        elif custom_id == "log_settings":
+            await self.on_log_settings(interaction)
 
         return True
 
@@ -366,6 +377,14 @@ class ChatSettingsView(View):
             ephemeral=True,
         )
         view.message = await interaction.original_response()
+
+    async def on_log_settings(self, interaction: Interaction):
+        view = await LogSettingsView.create()
+        await interaction.response.send_message(
+            content=view.render_content(),
+            view=view,
+            ephemeral=True,
+        )
 
     async def on_global_toggle(self, interaction: Interaction):
         current_state = self.settings.get("global", {}).get("chat_enabled", True)

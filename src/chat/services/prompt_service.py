@@ -13,6 +13,9 @@ import discord
 from src.chat.config.prompts import PROMPT_CONFIG
 from src.chat.config import chat_config
 from src.chat.services.event_service import event_service
+from src.chat.features.chat_settings.services.chat_settings_service import (
+    chat_settings_service,
+)
 from src.runtime_env import load_project_dotenv
 
 log = logging.getLogger(__name__)
@@ -1203,7 +1206,7 @@ class PromptService:
                 )
                 log.debug("检测到 <think_guide>，已在当前用户输入后追加思维链要求。")
 
-        if chat_config.DEBUG_CONFIG["LOG_FINAL_CONTEXT"]:
+        if chat_settings_service.get_full_context_logging_enabled_sync():
             log.debug(
                 f"发送给AI的最终提示词: {json.dumps(self._serialize_for_logging(final_conversation), ensure_ascii=False, indent=2)}"
             )

@@ -1253,7 +1253,8 @@ class OpenAIService:
             return obj
 
         log_detailed = app_config.DEBUG_CONFIG.get("LOG_DETAILED_GEMINI_PROCESS", False)
-        if log_detailed:
+        log_full_context = await chat_settings_service.get_full_context_logging_enabled()
+        if log_full_context:
             current_log_model_name = effective_model_name
             if is_custom_model:
                 current_log_model_name = self.custom_model_client.get_request_model_name(

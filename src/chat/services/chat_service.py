@@ -181,7 +181,23 @@ class ChatService:
                 # 清空列表，避免影响下一次对话
                 gemini_service.last_called_tools = []
 
-            log.info(f"已为用户 {author.display_name} 生成AI回复: {final_response}")
+            final_reply_log_getter = getattr(
+                chat_settings_service,
+                "get_final_reply_logging_enabled",
+                None,
+            )
+            should_log_final_reply = True
+            if callable(final_reply_log_getter):
+                try:
+                    should_log_final_reply = await final_reply_log_getter()
+                except Exception as log_setting_error:
+                    log.warning(
+                        "读取最终回复日志开关失败，将按开启处理: %s",
+                        log_setting_error,
+                    )
+
+            if should_log_final_reply:
+                log.info(f"已为用户 {author.display_name} 生成AI回复: {final_response}")
 
             return GeneratedReply(
                 response_text=final_response,
