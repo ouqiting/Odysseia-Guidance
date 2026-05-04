@@ -56,6 +56,8 @@ heartbeat_tolerance_seconds = 5.0
 SYSTEM_STATS_HISTORY = deque(maxlen=1440)
 BOT_LOG_TAIL_LINES = int(os.getenv("WEBUI_BOT_LOG_TAIL_LINES", "1000"))
 WEBUI_LOG_TAIL_LINES = int(os.getenv("WEBUI_SERVER_LOG_TAIL_LINES", "1000"))
+BOT_LOG_RESPONSE_LIMIT = int(os.getenv("WEBUI_BOT_LOG_RESPONSE_LIMIT", "200"))
+WEBUI_LOG_RESPONSE_LIMIT = int(os.getenv("WEBUI_SERVER_LOG_RESPONSE_LIMIT", "200"))
 BOT_LOG_BUFFER = deque(maxlen=BOT_LOG_TAIL_LINES)
 WEBUI_LOG_BUFFER = deque(maxlen=WEBUI_LOG_TAIL_LINES)
 BOT_LOG_LAST_ID = 0
@@ -212,6 +214,7 @@ def append_webui_log_entry(log_entry: Any):
 def build_log_payload(
     buffer: deque,
     tail_lines: int,
+    response_limit: int,
     after_id: int | None = None,
 ):
     records = list(buffer)
@@ -221,21 +224,27 @@ def build_log_payload(
 
     if after_id and records:
         if after_id < oldest_id:
-            selected_records = records[-tail_lines:]
+            selected_records = records[-response_limit:]
             reset_required = True
         else:
             selected_records = [record for record in records if record["id"] > after_id]
     else:
-        selected_records = records[-tail_lines:]
+        selected_records = records[-response_limit:]
 
-    messages = [record.get("raw", record.get("message", "")) for record in selected_records]
-    content = "\n".join(messages)
-    if content:
-        content += "\n"
+    serialized_entries = [
+        {
+            "id": record["id"],
+            "timestamp": record.get("timestamp", ""),
+            "level": record.get("level", "UNKNOWN"),
+            "logger": record.get("logger", "unknown"),
+            "message": record.get("message", ""),
+        }
+        for record in selected_records
+    ]
 
     return {
-        "logs": content,
-        "entries": selected_records,
+        "logs": "",
+        "entries": serialized_entries,
         "last_id": last_id,
         "reset_required": reset_required,
         "tail_lines": tail_lines,
@@ -458,7 +467,12 @@ def get_logs(request: Request, date: str | None = None, after_id: int | None = N
     current_date = datetime.utcnow().strftime("%Y-%m-%d")
 
     try:
-        payload = build_log_payload(BOT_LOG_BUFFER, BOT_LOG_TAIL_LINES, after_id)
+        payload = build_log_payload(
+            BOT_LOG_BUFFER,
+            BOT_LOG_TAIL_LINES,
+            BOT_LOG_RESPONSE_LIMIT,
+            after_id,
+        )
         payload["date"] = current_date
         return JSONResponse(payload)
     except Exception as exc:
@@ -475,7 +489,12 @@ def get_webui_logs(request: Request, after_id: int | None = None):
         return unauthorized_response(api=True)
     try:
         return JSONResponse(
-            build_log_payload(WEBUI_LOG_BUFFER, WEBUI_LOG_TAIL_LINES, after_id)
+            build_log_payload(
+                WEBUI_LOG_BUFFER,
+                WEBUI_LOG_TAIL_LINES,
+                WEBUI_LOG_RESPONSE_LIMIT,
+                after_id,
+            )
         )
     except Exception as exc:
         logger.error(f"Error fetching webui logs from stream: {exc}")
