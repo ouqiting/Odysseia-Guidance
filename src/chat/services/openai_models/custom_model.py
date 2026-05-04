@@ -210,9 +210,15 @@ class CustomModelClient:
             return False
 
     @staticmethod
-    def _is_payment_required_error(status_code: int, combined_error_text: str) -> bool:
+    def _get_api_key_rotation_error_label(
+        status_code: int, combined_error_text: str
+    ) -> str:
         lowered_error_text = str(combined_error_text or "").lower()
-        return status_code == 402 or "402 payment required" in lowered_error_text
+        if status_code == 402 or "402 payment required" in lowered_error_text:
+            return "402 Payment Required"
+        if status_code == 403 or "403 forbidden" in lowered_error_text:
+            return "403 Forbidden"
+        return ""
 
     def _sync_api_key_state(
         self,
@@ -286,6 +292,7 @@ class CustomModelClient:
         failed_api_key: str,
         failed_index: int,
         total_keys: int,
+        failure_label: str,
         reason_preview: str,
         runtime_config: Optional[Dict[str, Any]] = None,
     ) -> bool:
@@ -343,8 +350,9 @@ class CustomModelClient:
                     persist_note = persisted
                 next_key = self.api_key or ""
                 log.warning(
-                    "[Custom] Key ...%s hit 402 Payment Required, moved it to the end and switched to key ...%s (%s/%s) | persisted=%s | reason=%s",
+                    "[Custom] Key ...%s hit %s, moved it to the end and switched to key ...%s (%s/%s) | persisted=%s | reason=%s",
                     self._mask_key_tail(failed_api_key),
+                    failure_label,
                     self._mask_key_tail(next_key),
                     next_index + 1,
                     len(self._api_keys),
@@ -358,8 +366,9 @@ class CustomModelClient:
                 runtime_config["api_key"] = self._serialize_api_keys(self._api_keys)
                 runtime_config["api_keys"] = list(self._api_keys)
             log.info(
-                "[Custom] Key ...%s hit 402 Payment Required, but active key is already ...%s; will retry with the current active key.",
+                "[Custom] Key ...%s hit %s, but active key is already ...%s; will retry with the current active key.",
                 self._mask_key_tail(failed_api_key),
+                failure_label,
                 self._mask_key_tail(active_key),
             )
             return True
@@ -1870,13 +1879,17 @@ class CustomModelClient:
                                 f"{combined_error_text} | {response_text}"
                             )
 
-                        if self._is_payment_required_error(
-                            current_response.status_code, combined_error_text
-                        ):
+                        api_key_rotation_error_label = (
+                            self._get_api_key_rotation_error_label(
+                                current_response.status_code, combined_error_text
+                            )
+                        )
+                        if api_key_rotation_error_label:
                             rotated = await self._rotate_to_next_api_key(
                                 failed_api_key=api_key,
                                 failed_index=api_key_index,
                                 total_keys=total_api_keys,
+                                failure_label=api_key_rotation_error_label,
                                 reason_preview=combined_error_text[:1000],
                                 runtime_config=runtime_config,
                             )
