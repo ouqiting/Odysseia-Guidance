@@ -421,6 +421,12 @@ document.addEventListener('DOMContentLoaded', () => {
     let botAutoScrollEnabled = false;
     let webuiAutoScrollEnabled = false;
     let mobileSidebarOpen = false;
+    let currentView = 'dashboard';
+    let lastBotLogId = 0;
+    let lastWebUILogId = 0;
+    let isBotLogFetchInFlight = false;
+    let isWebUILogFetchInFlight = false;
+    let isSystemInfoFetchInFlight = false;
     const botLogRenderState = { pending: false, content: '', mode: 'text' };
     const webuiLogRenderState = { pending: false, content: '', mode: 'text' };
 
@@ -523,6 +529,11 @@ document.addEventListener('DOMContentLoaded', () => {
         return '';
     };
 
+    const normalizeLogEntries = (entries) =>
+        Array.isArray(entries)
+            ? entries.filter((entry) => typeof entry === 'string' && entry.trim())
+            : [];
+
     const scrollLogToBottom = (container) => {
         container.scrollTop = container.scrollHeight;
     };
@@ -599,6 +610,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const setActiveView = (viewName) => {
+        currentView = viewName;
         navItems.forEach((item) => {
             item.classList.toggle('is-active', item.dataset.view === viewName);
         });
@@ -610,13 +622,13 @@ document.addEventListener('DOMContentLoaded', () => {
         pageTitle.textContent = meta.title;
 
         if (viewName === 'bot-logs') {
-            fetchBotLogs();
+            fetchBotLogs(true);
         }
-        if (viewName === 'system') {
+        if (viewName === 'dashboard' || viewName === 'system') {
             fetchSystemInfo();
         }
         if (viewName === 'webui-logs') {
-            fetchWebUILogs();
+            fetchWebUILogs(true);
         }
 
         if (isMobileLayout() && mobileSidebarOpen) {
@@ -805,14 +817,34 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
-    const fetchBotLogs = async () => {
+    const fetchBotLogs = async (forceFull = false) => {
+        if (isBotLogFetchInFlight) {
+            return;
+        }
+
+        isBotLogFetchInFlight = true;
         try {
-            const response = await fetch('/api/logs');
+            const query = !forceFull && lastBotLogId > 0
+                ? `?after_id=${encodeURIComponent(lastBotLogId)}`
+                : '';
+            const response = await fetch(`/api/logs${query}`, { cache: 'no-store' });
             const data = await response.json();
-            fullBotLogContent = data.logs || '';
-            fullBotLogEntries = Array.isArray(data.entries)
-                ? data.entries.filter((entry) => typeof entry === 'string' && entry.trim())
-                : splitLogEntries(fullBotLogContent, BOT_LOG_ENTRY_START_REGEX);
+            const incomingEntries = normalizeLogEntries(data.entries);
+            const shouldReset = forceFull || !lastBotLogId || Boolean(data.reset_required);
+
+            if (shouldReset) {
+                fullBotLogEntries = incomingEntries;
+            } else if (incomingEntries.length) {
+                fullBotLogEntries = [...fullBotLogEntries, ...incomingEntries];
+                if (data.tail_lines && fullBotLogEntries.length > data.tail_lines) {
+                    fullBotLogEntries = fullBotLogEntries.slice(-data.tail_lines);
+                }
+            }
+
+            fullBotLogContent = fullBotLogEntries.join('\n');
+            if (typeof data.last_id === 'number') {
+                lastBotLogId = data.last_id;
+            }
             if (data.tail_lines) {
                 botLogSummary.textContent = `显示最近 ${data.tail_lines} 条缓存日志，时区 ${selectedTimezone}`;
             }
@@ -820,19 +852,42 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             fullBotLogContent = '';
             fullBotLogEntries = [];
+            lastBotLogId = 0;
             syncLogContent(botLogContainer, botLogRenderState, 'Error fetching Bot logs.', 'text');
             botLogSummary.textContent = 'Bot 日志加载失败';
+        } finally {
+            isBotLogFetchInFlight = false;
         }
     };
 
-    const fetchWebUILogs = async () => {
+    const fetchWebUILogs = async (forceFull = false) => {
+        if (isWebUILogFetchInFlight) {
+            return;
+        }
+
+        isWebUILogFetchInFlight = true;
         try {
-            const response = await fetch('/api/webui-logs');
+            const query = !forceFull && lastWebUILogId > 0
+                ? `?after_id=${encodeURIComponent(lastWebUILogId)}`
+                : '';
+            const response = await fetch(`/api/webui-logs${query}`, { cache: 'no-store' });
             const data = await response.json();
-            fullWebUILogContent = data.logs || '';
-            fullWebUILogEntries = Array.isArray(data.entries)
-                ? data.entries.filter((entry) => typeof entry === 'string' && entry.trim())
-                : splitLogEntries(fullWebUILogContent, WEBUI_LOG_ENTRY_START_REGEX);
+            const incomingEntries = normalizeLogEntries(data.entries);
+            const shouldReset = forceFull || !lastWebUILogId || Boolean(data.reset_required);
+
+            if (shouldReset) {
+                fullWebUILogEntries = incomingEntries;
+            } else if (incomingEntries.length) {
+                fullWebUILogEntries = [...fullWebUILogEntries, ...incomingEntries];
+                if (data.tail_lines && fullWebUILogEntries.length > data.tail_lines) {
+                    fullWebUILogEntries = fullWebUILogEntries.slice(-data.tail_lines);
+                }
+            }
+
+            fullWebUILogContent = fullWebUILogEntries.join('\n');
+            if (typeof data.last_id === 'number') {
+                lastWebUILogId = data.last_id;
+            }
             if (data.tail_lines) {
                 webuiLogSummary.textContent = `显示最近 ${data.tail_lines} 行 WebUI 日志`;
             }
@@ -840,14 +895,22 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             fullWebUILogContent = '';
             fullWebUILogEntries = [];
+            lastWebUILogId = 0;
             syncLogContent(webuiLogContainer, webuiLogRenderState, 'Error fetching WebUI logs.', 'text');
             webuiLogSummary.textContent = 'WebUI 日志加载失败';
+        } finally {
+            isWebUILogFetchInFlight = false;
         }
     };
 
     const fetchSystemInfo = async () => {
+        if (isSystemInfoFetchInFlight) {
+            return;
+        }
+
+        isSystemInfoFetchInFlight = true;
         try {
-            const response = await fetch('/api/system-info');
+            const response = await fetch('/api/system-info', { cache: 'no-store' });
             const data = await response.json();
             const current = data.current;
             const stats = data.stats_24h;
@@ -897,6 +960,8 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             document.getElementById('dashboard-cpu-text').textContent = 'Error';
             document.getElementById('dashboard-ram-text').textContent = '系统信息获取失败';
+        } finally {
+            isSystemInfoFetchInFlight = false;
         }
     };
 
@@ -1006,15 +1071,24 @@ document.addEventListener('DOMContentLoaded', () => {
     applyThemePreference();
     toggleAutoScroll(botAutoScrollToggle, botAutoScrollEnabled);
     toggleAutoScroll(webuiAutoScrollToggle, webuiAutoScrollEnabled);
+    setActiveView('dashboard');
     fetchBotStatus();
-    fetchBotLogs();
-    fetchWebUILogs();
     fetchSystemInfo();
 
-    setInterval(fetchBotStatus, 1000);
-    setInterval(fetchSystemInfo, 2000);
-    setInterval(fetchWebUILogs, 2000);
-    setInterval(fetchBotLogs, 1500);
+    setInterval(fetchBotStatus, 3000);
+    setInterval(() => {
+        if (currentView === 'dashboard' || currentView === 'system') {
+            fetchSystemInfo();
+        }
+    }, 5000);
+    setInterval(() => {
+        if (currentView === 'bot-logs') {
+            fetchBotLogs();
+        }
+        if (currentView === 'webui-logs') {
+            fetchWebUILogs();
+        }
+    }, 3000);
     setInterval(() => {
         if (botAutoScrollEnabled && !isSelectionInside(botLogContainer)) {
             scrollLogToBottom(botLogContainer);
@@ -1023,8 +1097,6 @@ document.addEventListener('DOMContentLoaded', () => {
             scrollLogToBottom(webuiLogContainer);
         }
     }, 500);
-
-    setActiveView('dashboard');
 });
 </script>
 </body>

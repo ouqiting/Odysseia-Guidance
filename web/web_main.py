@@ -46,6 +46,9 @@ else:
 
 BOT_CONTAINER_NAME = os.getenv("BOT_CONTAINER_NAME", "Odysseia_Guidance")
 WEB_CONTAINER_NAME = os.getenv("WEB_CONTAINER_NAME", "config_web")
+WEBUI_REMEMBER_ME_MAX_AGE = int(
+    os.getenv("WEBUI_REMEMBER_ME_MAX_AGE", str(60 * 60 * 24 * 30))
+)
 last_heartbeat_time = datetime.utcnow()
 heartbeat_tolerance_seconds = 5.0
 SYSTEM_STATS_HISTORY = deque(maxlen=1440)
@@ -53,6 +56,57 @@ BOT_LOG_TAIL_LINES = int(os.getenv("WEBUI_BOT_LOG_TAIL_LINES", "1000"))
 WEBUI_LOG_TAIL_LINES = int(os.getenv("WEBUI_SERVER_LOG_TAIL_LINES", "1000"))
 BOT_LOG_BUFFER = deque(maxlen=BOT_LOG_TAIL_LINES)
 WEBUI_LOG_BUFFER = deque(maxlen=WEBUI_LOG_TAIL_LINES)
+BOT_LOG_LAST_ID = 0
+WEBUI_LOG_LAST_ID = 0
+
+
+def append_bot_log_entry(message: str):
+    global BOT_LOG_LAST_ID
+    BOT_LOG_LAST_ID += 1
+    BOT_LOG_BUFFER.append({"id": BOT_LOG_LAST_ID, "message": message})
+
+
+def append_webui_log_entry(message: str):
+    global WEBUI_LOG_LAST_ID
+    WEBUI_LOG_LAST_ID += 1
+    WEBUI_LOG_BUFFER.append({"id": WEBUI_LOG_LAST_ID, "message": message})
+
+
+def build_log_payload(
+    buffer: deque,
+    tail_lines: int,
+    after_id: int | None = None,
+):
+    records = list(buffer)
+    last_id = records[-1]["id"] if records else 0
+    oldest_id = records[0]["id"] if records else 0
+    reset_required = False
+
+    if after_id and records:
+        if after_id < oldest_id:
+            selected_records = records[-tail_lines:]
+            reset_required = True
+        else:
+            selected_records = [record for record in records if record["id"] > after_id]
+    else:
+        selected_records = records[-tail_lines:]
+
+    messages = [record["message"] for record in selected_records]
+    content = "\n".join(messages)
+    if content:
+        content += "\n"
+
+    return {
+        "logs": content,
+        "entries": messages,
+        "last_id": last_id,
+        "reset_required": reset_required,
+        "tail_lines": tail_lines,
+    }
+
+
+def file_response_no_cache(path: str):
+    return FileResponse(path, headers={"Cache-Control": "no-store"})
 
 
 class DequeLogHandler(logging.Handler):
@@ -62,7 +116,11 @@ class DequeLogHandler(logging.Handler):
 
     def emit(self, record):
         try:
-            self.target_buffer.append(self.format(record))
+            message = self.format(record)
+            if self.target_buffer is WEBUI_LOG_BUFFER:
+                append_webui_log_entry(message)
+            else:
+                self.target_buffer.append(message)
         except Exception:
             self.handleError(record)
 
@@ -122,7 +180,7 @@ async def receive_log(request: Request):
     if data and data.get("logs"):
         try:
             for log_entry in data["logs"]:
-                BOT_LOG_BUFFER.append(log_entry)
+                append_bot_log_entry(log_entry)
         except Exception as exc:
             logger.error(f"Failed to write logs: {exc}")
             return PlainTextResponse("Error writing logs", status_code=500)
@@ -134,22 +192,26 @@ async def receive_log(request: Request):
 def config_page(request: Request):
     if is_logged_in(request):
         return RedirectResponse(url="/main", status_code=302)
-    return FileResponse(login_page_path)
+    return file_response_no_cache(login_page_path)
 
 
 @web_app.post("/login")
 async def login(request: Request):
     data = await request.json()
     token = data.get("token")
+    remember_token = bool(data.get("rememberToken"))
     if token in TOKEN_ARRAY:
         response = JSONResponse({"message": "登录成功"})
-        response.set_cookie(
-            key="webui_token",
-            value=token,
-            httponly=True,
-            samesite="lax",
-            path="/",
-        )
+        cookie_kwargs = {
+            "key": "webui_token",
+            "value": token,
+            "httponly": True,
+            "samesite": "lax",
+            "path": "/",
+        }
+        if remember_token:
+            cookie_kwargs["max_age"] = WEBUI_REMEMBER_ME_MAX_AGE
+        response.set_cookie(**cookie_kwargs)
         return response
     return JSONResponse({"message": "无效的用户名或密码"}, status_code=401)
 
@@ -158,7 +220,7 @@ async def login(request: Request):
 def main_page(request: Request):
     if not is_logged_in(request):
         return unauthorized_response(api=False)
-    return FileResponse(main_page_path)
+    return file_response_no_cache(main_page_path)
 
 
 @web_app.get("/logout")
@@ -246,24 +308,15 @@ def restart_web(request: Request):
 
 
 @web_app.get("/api/logs")
-def get_logs(request: Request, date: str | None = None):
+def get_logs(request: Request, date: str | None = None, after_id: int | None = None):
     if not is_logged_in(request):
         return unauthorized_response(api=True)
     current_date = datetime.utcnow().strftime("%Y-%m-%d")
 
     try:
-        tail_lines = list(BOT_LOG_BUFFER)[-BOT_LOG_TAIL_LINES:]
-        content = "\n".join(tail_lines)
-        if content:
-            content += "\n"
-        return JSONResponse(
-            {
-                "logs": content,
-                "entries": tail_lines,
-                "date": current_date,
-                "tail_lines": BOT_LOG_TAIL_LINES,
-            }
-        )
+        payload = build_log_payload(BOT_LOG_BUFFER, BOT_LOG_TAIL_LINES, after_id)
+        payload["date"] = current_date
+        return JSONResponse(payload)
     except Exception as exc:
         logger.error(f"Error in get_logs: {exc}")
         return JSONResponse(
@@ -273,18 +326,12 @@ def get_logs(request: Request, date: str | None = None):
 
 
 @web_app.get("/api/webui-logs")
-def get_webui_logs(request: Request):
+def get_webui_logs(request: Request, after_id: int | None = None):
     if not is_logged_in(request):
         return unauthorized_response(api=True)
     try:
-        entries = list(WEBUI_LOG_BUFFER)
-        content = "\n".join(entries)
         return JSONResponse(
-            {
-                "logs": content,
-                "entries": entries,
-                "tail_lines": WEBUI_LOG_TAIL_LINES,
-            }
+            build_log_payload(WEBUI_LOG_BUFFER, WEBUI_LOG_TAIL_LINES, after_id)
         )
     except Exception as exc:
         logger.error(f"Error fetching webui logs from stream: {exc}")

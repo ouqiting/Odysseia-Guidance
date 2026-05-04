@@ -2,6 +2,12 @@ const tokenInput = document.getElementById('token');
 const loginButton = document.getElementById('loginBtn');
 const rememberToggle = document.getElementById('rememberToken');
 const rememberedTokenKey = 'webuiRememberedToken';
+const legacySessionTokenKey = 'adminToken';
+
+function clearLegacyStoredTokens() {
+    localStorage.removeItem(rememberedTokenKey);
+    sessionStorage.removeItem(legacySessionTokenKey);
+}
 
 async function loginWithToken(token, rememberToken) {
     if (!token) {
@@ -14,20 +20,17 @@ async function loginWithToken(token, rememberToken) {
         headers: {
             'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ token })
+        body: JSON.stringify({
+            token,
+            rememberToken
+        })
     });
 
     if (!response.ok) {
         throw new Error('登录失败，请检查口令。');
     }
 
-    sessionStorage.setItem('adminToken', token);
-    if (rememberToken) {
-        localStorage.setItem(rememberedTokenKey, token);
-    } else {
-        localStorage.removeItem(rememberedTokenKey);
-    }
-
+    clearLegacyStoredTokens();
     window.location.href = '/main';
     return true;
 }
@@ -56,8 +59,7 @@ tokenInput.addEventListener('keydown', async (event) => {
 window.addEventListener('DOMContentLoaded', async () => {
     const params = new URLSearchParams(window.location.search);
     if (params.get('logged_out') === '1') {
-        localStorage.removeItem(rememberedTokenKey);
-        sessionStorage.removeItem('adminToken');
+        clearLegacyStoredTokens();
         if (window.history.replaceState) {
             window.history.replaceState({}, document.title, window.location.pathname);
         }
@@ -69,12 +71,11 @@ window.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
-    tokenInput.value = rememberedToken;
     rememberToggle.checked = true;
 
     try {
         await loginWithToken(rememberedToken, true);
     } catch (error) {
-        localStorage.removeItem(rememberedTokenKey);
+        clearLegacyStoredTokens();
     }
 });
