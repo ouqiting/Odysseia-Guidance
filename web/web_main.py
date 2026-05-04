@@ -1,10 +1,12 @@
 import logging
 import os
+import re
 import sys
 import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta
+from typing import Any
 
 import psutil
 from fastapi import FastAPI, Request
@@ -58,18 +60,153 @@ BOT_LOG_BUFFER = deque(maxlen=BOT_LOG_TAIL_LINES)
 WEBUI_LOG_BUFFER = deque(maxlen=WEBUI_LOG_TAIL_LINES)
 BOT_LOG_LAST_ID = 0
 WEBUI_LOG_LAST_ID = 0
+KNOWN_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+BOT_LOG_PATTERN = re.compile(
+    r"^\[(?P<timestamp>[^\]]+)\] "
+    r"\[(?P<level>[A-Z]+)\] "
+    r"\[(?P<logger>[^\]]+)\] "
+    r"(?P<message>[\s\S]*)$"
+)
+WEBUI_LOG_PATTERN = re.compile(
+    r"^(?P<timestamp>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:,\d{3})?) - "
+    r"(?P<logger>.+?) - "
+    r"(?P<level>[A-Z]+) - "
+    r"(?P<message>[\s\S]*)$"
+)
 
 
-def append_bot_log_entry(message: str):
+def normalize_log_level(value: Any) -> str:
+    level = str(value or "UNKNOWN").upper()
+    return level if level in KNOWN_LOG_LEVELS else "UNKNOWN"
+
+
+def stringify_log_value(value: Any, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value)
+
+
+def build_raw_log_line(
+    timestamp: str,
+    level: str,
+    logger_name: str,
+    message: str,
+) -> str:
+    if timestamp and logger_name:
+        return f"[{timestamp}] [{level}] [{logger_name}] {message}"
+    return message
+
+
+def build_structured_log_entry(
+    timestamp: str,
+    level: str,
+    logger_name: str,
+    message: str,
+    raw: str,
+) -> dict[str, Any]:
+    return {
+        "timestamp": timestamp,
+        "level": normalize_log_level(level),
+        "logger": logger_name or "unknown",
+        "message": message,
+        "raw": raw or build_raw_log_line(timestamp, level, logger_name, message),
+    }
+
+
+def parse_raw_log_entry(raw: str, pattern: re.Pattern[str]) -> dict[str, Any]:
+    match = pattern.match(raw)
+    if not match:
+        return build_structured_log_entry("", "UNKNOWN", "unknown", raw, raw)
+
+    timestamp = stringify_log_value(match.group("timestamp"))
+    level = normalize_log_level(match.group("level"))
+    logger_name = stringify_log_value(match.group("logger"), "unknown")
+    message = stringify_log_value(match.group("message"))
+    return build_structured_log_entry(timestamp, level, logger_name, message, raw)
+
+
+def normalize_bot_log_entry(log_entry: Any) -> dict[str, Any]:
+    if isinstance(log_entry, dict):
+        timestamp = stringify_log_value(log_entry.get("timestamp"))
+        level = normalize_log_level(log_entry.get("level"))
+        logger_name = stringify_log_value(
+            log_entry.get("logger") or log_entry.get("name"),
+            "unknown",
+        )
+        message = stringify_log_value(
+            log_entry.get("message"),
+            stringify_log_value(log_entry.get("raw")),
+        )
+        raw = stringify_log_value(
+            log_entry.get("raw"),
+            build_raw_log_line(timestamp, level, logger_name, message),
+        )
+        return build_structured_log_entry(timestamp, level, logger_name, message, raw)
+
+    return parse_raw_log_entry(stringify_log_value(log_entry), BOT_LOG_PATTERN)
+
+
+def normalize_webui_log_entry(log_entry: Any) -> dict[str, Any]:
+    if isinstance(log_entry, dict):
+        timestamp = stringify_log_value(log_entry.get("timestamp"))
+        level = normalize_log_level(log_entry.get("level"))
+        logger_name = stringify_log_value(
+            log_entry.get("logger") or log_entry.get("name"),
+            "unknown",
+        )
+        message = stringify_log_value(
+            log_entry.get("message"),
+            stringify_log_value(log_entry.get("raw")),
+        )
+        raw = stringify_log_value(
+            log_entry.get("raw"),
+            build_raw_log_line(timestamp, level, logger_name, message),
+        )
+        return build_structured_log_entry(timestamp, level, logger_name, message, raw)
+
+    return parse_raw_log_entry(stringify_log_value(log_entry), WEBUI_LOG_PATTERN)
+
+
+def build_structured_entry_from_record(
+    record: logging.LogRecord,
+    raw_message: str,
+) -> dict[str, Any]:
+    message = record.getMessage()
+    exc_text = getattr(record, "exc_text", None)
+    if exc_text:
+        message = f"{message}\n{exc_text}"
+    elif record.exc_info:
+        formatter = logging.Formatter()
+        message = f"{message}\n{formatter.formatException(record.exc_info)}"
+
+    if record.stack_info:
+        formatter = logging.Formatter()
+        message = f"{message}\n{formatter.formatStack(record.stack_info)}"
+
+    timestamp = datetime.fromtimestamp(record.created).isoformat(timespec="milliseconds")
+    return build_structured_log_entry(
+        timestamp,
+        record.levelname,
+        record.name,
+        message,
+        raw_message,
+    )
+
+
+def append_bot_log_entry(log_entry: Any):
     global BOT_LOG_LAST_ID
     BOT_LOG_LAST_ID += 1
-    BOT_LOG_BUFFER.append({"id": BOT_LOG_LAST_ID, "message": message})
+    structured_entry = normalize_bot_log_entry(log_entry)
+    structured_entry["id"] = BOT_LOG_LAST_ID
+    BOT_LOG_BUFFER.append(structured_entry)
 
 
-def append_webui_log_entry(message: str):
+def append_webui_log_entry(log_entry: Any):
     global WEBUI_LOG_LAST_ID
     WEBUI_LOG_LAST_ID += 1
-    WEBUI_LOG_BUFFER.append({"id": WEBUI_LOG_LAST_ID, "message": message})
+    structured_entry = normalize_webui_log_entry(log_entry)
+    structured_entry["id"] = WEBUI_LOG_LAST_ID
+    WEBUI_LOG_BUFFER.append(structured_entry)
 
 
 def build_log_payload(
@@ -91,14 +228,14 @@ def build_log_payload(
     else:
         selected_records = records[-tail_lines:]
 
-    messages = [record["message"] for record in selected_records]
+    messages = [record.get("raw", record.get("message", "")) for record in selected_records]
     content = "\n".join(messages)
     if content:
         content += "\n"
 
     return {
         "logs": content,
-        "entries": messages,
+        "entries": selected_records,
         "last_id": last_id,
         "reset_required": reset_required,
         "tail_lines": tail_lines,
@@ -118,7 +255,7 @@ class DequeLogHandler(logging.Handler):
         try:
             message = self.format(record)
             if self.target_buffer is WEBUI_LOG_BUFFER:
-                append_webui_log_entry(message)
+                append_webui_log_entry(build_structured_entry_from_record(record, message))
             else:
                 self.target_buffer.append(message)
         except Exception:
@@ -177,9 +314,16 @@ async def receive_log(request: Request):
     last_heartbeat_time = datetime.utcnow()
 
     data = await request.json()
-    if data and data.get("logs"):
+    if data:
+        log_entries = data.get("entries")
+        if log_entries is None:
+            log_entries = data.get("logs")
+    else:
+        log_entries = None
+
+    if log_entries:
         try:
-            for log_entry in data["logs"]:
+            for log_entry in log_entries:
                 append_bot_log_entry(log_entry)
         except Exception as exc:
             logger.error(f"Failed to write logs: {exc}")

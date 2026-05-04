@@ -412,9 +412,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const controlLastAction = document.getElementById('control-last-action');
     const controlSyncText = document.getElementById('control-sync-text');
 
-    let fullBotLogContent = '';
     let fullBotLogEntries = [];
-    let fullWebUILogContent = '';
     let fullWebUILogEntries = [];
     let selectedTimezone = localStorage.getItem('selectedTimezone') || Intl.DateTimeFormat().resolvedOptions().timeZone;
     let preferredTheme = localStorage.getItem('preferredTheme') || 'system';
@@ -476,48 +474,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const getSelectedLogLevels = (container) =>
         Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map((input) => input.value);
+    const KNOWN_LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'];
 
-    const BOT_LOG_ENTRY_START_REGEX = /^\[\d{4}[/-]\d{1,2}[/-]\d{1,2} \d{2}:\d{2}:\d{2}\] \[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]/;
-    const WEBUI_LOG_ENTRY_START_REGEX = /^\d{4}-\d{2}-\d{2} .* - (DEBUG|INFO|WARNING|ERROR|CRITICAL) - /;
-
-    const splitLogEntries = (content, startRegex) => {
-        const sourceLines = content.split('\n');
-        const entries = [];
-        let currentEntry = '';
-
-        sourceLines.forEach((line) => {
-            if (!line.trim()) {
-                return;
-            }
-
-            if (startRegex.test(line)) {
-                if (currentEntry) {
-                    entries.push(currentEntry);
-                }
-                currentEntry = line;
-                return;
-            }
-
-            currentEntry = currentEntry ? `${currentEntry}\n${line}` : line;
-        });
-
-        if (currentEntry) {
-            entries.push(currentEntry);
-        }
-
-        return entries;
-    };
-
-    const countEntryLines = (entry) => entry.split('\n').filter((line) => line.trim()).length;
-
-    const getBotLogLevel = (entry) => {
-        const match = entry.match(BOT_LOG_ENTRY_START_REGEX);
-        return match ? match[1] : '';
-    };
-
-    const getWebUILogLevel = (entry) => {
-        const match = entry.match(WEBUI_LOG_ENTRY_START_REGEX);
-        return match ? match[1] : '';
+    const normalizeLogLevel = (value) => {
+        const level = typeof value === 'string' ? value.toUpperCase() : 'UNKNOWN';
+        return KNOWN_LOG_LEVELS.includes(level) ? level : 'UNKNOWN';
     };
 
     const getLogClassByLevel = (level) => {
@@ -531,8 +492,89 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const normalizeLogEntries = (entries) =>
         Array.isArray(entries)
-            ? entries.filter((entry) => typeof entry === 'string' && entry.trim())
+            ? entries.map((entry) => {
+                if (!entry || typeof entry !== 'object') {
+                    return null;
+                }
+
+                const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : '';
+                const level = normalizeLogLevel(entry.level);
+                const loggerName = typeof entry.logger === 'string' && entry.logger.trim()
+                    ? entry.logger.trim()
+                    : 'unknown';
+                const message = typeof entry.message === 'string'
+                    ? entry.message
+                    : (typeof entry.raw === 'string' ? entry.raw : '');
+                const raw = typeof entry.raw === 'string' && entry.raw.trim()
+                    ? entry.raw
+                    : message;
+
+                return {
+                    id: typeof entry.id === 'number' ? entry.id : 0,
+                    timestamp,
+                    level,
+                    logger: loggerName,
+                    message,
+                    raw
+                };
+            }).filter((entry) => entry && entry.raw.trim())
             : [];
+
+    const formatLogTimestamp = (timestamp, localizeTimestamp = false) => {
+        if (!timestamp) {
+            return '';
+        }
+
+        if (!localizeTimestamp) {
+            return timestamp;
+        }
+
+        const date = new Date(timestamp);
+        if (Number.isNaN(date.getTime())) {
+            return timestamp;
+        }
+
+        return date.toLocaleString(undefined, {
+            timeZone: selectedTimezone,
+            hour12: false
+        });
+    };
+
+    const formatLogEntryText = (entry, localizeTimestamp = false) => {
+        if (!entry) {
+            return '';
+        }
+
+        const timestamp = formatLogTimestamp(entry.timestamp, localizeTimestamp);
+        const headerParts = [];
+
+        if (timestamp) {
+            headerParts.push(`[${timestamp}]`);
+        }
+        if (entry.level) {
+            headerParts.push(`[${entry.level}]`);
+        }
+        if (entry.logger) {
+            headerParts.push(`[${entry.logger}]`);
+        }
+
+        const header = headerParts.join(' ');
+        if (!header) {
+            return entry.message || entry.raw;
+        }
+
+        return entry.message
+            ? `${header} ${entry.message}`
+            : header;
+    };
+
+    const buildLogSearchText = (entry) =>
+        [entry.timestamp, entry.level, entry.logger, entry.message, entry.raw]
+            .filter((part) => typeof part === 'string' && part.trim())
+            .join('\n');
+
+    const countEntryLines = (entryText) =>
+        entryText.split('\n').filter((line) => line.trim()).length;
 
     const scrollLogToBottom = (container) => {
         container.scrollTop = container.scrollHeight;
@@ -675,38 +717,23 @@ document.addEventListener('DOMContentLoaded', () => {
         dashboardTimezoneText.textContent = selectedTimezone;
     };
 
-    const localizeBotLogTimestamp = (line) => {
-        const timestampRegex = /\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)\]/;
-        const match = line.match(timestampRegex);
-        if (!match) {
-            return line;
-        }
-
-        const utcDate = new Date(match[1]);
-        const localized = utcDate.toLocaleString(undefined, {
-            timeZone: selectedTimezone,
-            hour12: false
-        });
-        return line.replace(match[1], localized);
-    };
-
     const renderBotLogs = () => {
         const regexStr = botRegexInput.value.trim();
         const selectedLevels = getSelectedLogLevels(botLogLevelFilter);
-        let entries = fullBotLogEntries.length
-            ? [...fullBotLogEntries]
-            : splitLogEntries(fullBotLogContent, BOT_LOG_ENTRY_START_REGEX);
+        let entries = [...fullBotLogEntries];
 
         if (!selectedLevels.length) {
             entries = [];
         } else {
-            entries = entries.filter((entry) => selectedLevels.includes(getBotLogLevel(entry)));
+            entries = entries.filter((entry) =>
+                entry.level === 'UNKNOWN' || selectedLevels.includes(entry.level)
+            );
         }
 
         if (regexStr) {
             try {
                 const regex = new RegExp(regexStr, 'i');
-                entries = entries.filter((entry) => regex.test(entry));
+                entries = entries.filter((entry) => regex.test(buildLogSearchText(entry)));
             } catch (error) {
                 syncLogContent(botLogContainer, botLogRenderState, 'Invalid Regex...', 'text');
                 if (botLogRenderState.pending) {
@@ -728,11 +755,14 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        const visibleLineCount = entries.reduce((total, entry) => total + countEntryLines(entry), 0);
+        const visibleLineCount = entries.reduce(
+            (total, entry) => total + countEntryLines(formatLogEntryText(entry, true)),
+            0
+        );
         const html = entries.map((entry) => {
-            const localizedEntry = escapeHtml(localizeBotLogTimestamp(entry));
-            const logClass = getLogClassByLevel(getBotLogLevel(entry));
-            return `<div class="log-line ${logClass}">${localizedEntry}</div>`;
+            const renderedText = escapeHtml(formatLogEntryText(entry, true));
+            const logClass = getLogClassByLevel(entry.level);
+            return `<div class="log-line ${logClass}">${renderedText}</div>`;
         }).join('');
 
         const rendered = syncLogContent(botLogContainer, botLogRenderState, html, 'html');
@@ -750,20 +780,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const renderWebUILogs = () => {
         const regexStr = webuiRegexInput.value.trim();
         const selectedLevels = getSelectedLogLevels(webuiLogLevelFilter);
-        let entries = fullWebUILogEntries.length
-            ? [...fullWebUILogEntries]
-            : splitLogEntries(fullWebUILogContent, WEBUI_LOG_ENTRY_START_REGEX);
+        let entries = [...fullWebUILogEntries];
 
         if (!selectedLevels.length) {
             entries = [];
         } else {
-            entries = entries.filter((entry) => selectedLevels.includes(getWebUILogLevel(entry)));
+            entries = entries.filter((entry) =>
+                entry.level === 'UNKNOWN' || selectedLevels.includes(entry.level)
+            );
         }
 
         if (regexStr) {
             try {
                 const regex = new RegExp(regexStr, 'i');
-                entries = entries.filter((entry) => regex.test(entry));
+                entries = entries.filter((entry) => regex.test(buildLogSearchText(entry)));
             } catch (error) {
                 syncLogContent(webuiLogContainer, webuiLogRenderState, 'Invalid Regex...', 'text');
                 if (webuiLogRenderState.pending) {
@@ -784,11 +814,14 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        const visibleLineCount = entries.reduce((total, entry) => total + countEntryLines(entry), 0);
+        const visibleLineCount = entries.reduce(
+            (total, entry) => total + countEntryLines(formatLogEntryText(entry)),
+            0
+        );
         const html = entries.map((entry) => {
-            const escapedEntry = escapeHtml(entry);
-            const logClass = getLogClassByLevel(getWebUILogLevel(entry));
-            return `<div class="log-line ${logClass}">${escapedEntry}</div>`;
+            const renderedText = escapeHtml(formatLogEntryText(entry));
+            const logClass = getLogClassByLevel(entry.level);
+            return `<div class="log-line ${logClass}">${renderedText}</div>`;
         }).join('');
 
         const rendered = syncLogContent(webuiLogContainer, webuiLogRenderState, html, 'html');
@@ -841,7 +874,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            fullBotLogContent = fullBotLogEntries.join('\n');
             if (typeof data.last_id === 'number') {
                 lastBotLogId = data.last_id;
             }
@@ -850,7 +882,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             renderBotLogs();
         } catch (error) {
-            fullBotLogContent = '';
             fullBotLogEntries = [];
             lastBotLogId = 0;
             syncLogContent(botLogContainer, botLogRenderState, 'Error fetching Bot logs.', 'text');
@@ -884,7 +915,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            fullWebUILogContent = fullWebUILogEntries.join('\n');
             if (typeof data.last_id === 'number') {
                 lastWebUILogId = data.last_id;
             }
@@ -893,7 +923,6 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             renderWebUILogs();
         } catch (error) {
-            fullWebUILogContent = '';
             fullWebUILogEntries = [];
             lastWebUILogId = 0;
             syncLogContent(webuiLogContainer, webuiLogRenderState, 'Error fetching WebUI logs.', 'text');
@@ -1071,6 +1100,10 @@ document.addEventListener('DOMContentLoaded', () => {
     applyThemePreference();
     toggleAutoScroll(botAutoScrollToggle, botAutoScrollEnabled);
     toggleAutoScroll(webuiAutoScrollToggle, webuiAutoScrollEnabled);
+    document.getElementById('dashboard-log-count-text').textContent = '--';
+    document.getElementById('dashboard-log-lines-text').textContent = '按需加载';
+    document.getElementById('dashboard-webui-count-text').textContent = '--';
+    document.getElementById('dashboard-webui-state-text').textContent = '按需加载';
     setActiveView('dashboard');
     fetchBotStatus();
     fetchSystemInfo();

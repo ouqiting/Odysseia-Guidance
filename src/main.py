@@ -79,7 +79,34 @@ class QueueHandler(logging.Handler):
         self.log_queue = log_queue
 
     def emit(self, record):
-        self.log_queue.put(self.format(record))  # 格式化后入列
+        raw_message = self.format(record)
+        message = record.getMessage()
+
+        exc_text = getattr(record, "exc_text", None)
+        if exc_text:
+            message = f"{message}\n{exc_text}"
+        elif record.exc_info:
+            formatter = self.formatter or logging.Formatter()
+            message = f"{message}\n{formatter.formatException(record.exc_info)}"
+
+        if record.stack_info:
+            formatter = self.formatter or logging.Formatter()
+            message = f"{message}\n{formatter.formatStack(record.stack_info)}"
+
+        self.log_queue.put(
+            {
+                "timestamp": datetime.fromtimestamp(
+                    record.created,
+                    tz=timezone.utc,
+                )
+                .isoformat(timespec="milliseconds")
+                .replace("+00:00", "Z"),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": message,
+                "raw": raw_message,
+            }
+        )
 
 
 def heartbeat_sender():
@@ -101,7 +128,7 @@ def heartbeat_sender():
         try:
             payload = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
-                "logs": logs_to_send,
+                "entries": logs_to_send,
             }
             response = requests.post(log_server_url, json=payload, timeout=webui_log_timeout)
             if response.status_code != 200:

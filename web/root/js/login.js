@@ -1,11 +1,11 @@
 const tokenInput = document.getElementById('token');
 const loginButton = document.getElementById('loginBtn');
 const rememberToggle = document.getElementById('rememberToken');
-const rememberedTokenKey = 'webuiRememberedToken';
+const legacyRememberedTokenKey = 'webuiRememberedToken';
 const legacySessionTokenKey = 'adminToken';
 
 function clearLegacyStoredTokens() {
-    localStorage.removeItem(rememberedTokenKey);
+    localStorage.removeItem(legacyRememberedTokenKey);
     sessionStorage.removeItem(legacySessionTokenKey);
 }
 
@@ -57,25 +57,11 @@ tokenInput.addEventListener('keydown', async (event) => {
 });
 
 window.addEventListener('DOMContentLoaded', async () => {
+    clearLegacyStoredTokens();
     const params = new URLSearchParams(window.location.search);
     if (params.get('logged_out') === '1') {
-        clearLegacyStoredTokens();
         if (window.history.replaceState) {
             window.history.replaceState({}, document.title, window.location.pathname);
         }
-        return;
-    }
-
-    const rememberedToken = localStorage.getItem(rememberedTokenKey);
-    if (!rememberedToken) {
-        return;
-    }
-
-    rememberToggle.checked = true;
-
-    try {
-        await loginWithToken(rememberedToken, true);
-    } catch (error) {
-        clearLegacyStoredTokens();
     }
 });
