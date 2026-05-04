@@ -12,6 +12,10 @@ _PROACTIVE_TOOL_CHOICE_RULES: Tuple[Tuple[re.Pattern[str], str], ...] = (
         "search_web",
     ),
     (
+        re.compile(r"(活字印刷|倒放活字印刷|otto)"),
+        "otto_tool",
+    ),
+    (
         re.compile(r"占卜"),
         "tarot_reading",
     ),

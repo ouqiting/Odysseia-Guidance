@@ -24,6 +24,7 @@ gradio_client
 langchain-text-splitters
 numpy==1.26.4
 edge-tts
+pypinyin
 
 # Web UI 依赖
 fastapi
