@@ -35,7 +35,8 @@
             margin-bottom: 0.5rem;
             color: #555;
         }
-        input[type="text"] {
+        input[type="text"],
+        input[type="password"] {
             width: 100%;
             padding: 0.5rem;
             border: 1px solid #ccc;
@@ -74,7 +75,7 @@
         <h2>管理员登录</h2>
         <div class="form-group">
             <label for="token">管理员口令</label>
-            <input type="text" id="token" required>
+            <input type="password" id="token" required>
         </div>
         <button class="btn" id="loginBtn">登录</button>
         <label class="remember-row" for="rememberToken">

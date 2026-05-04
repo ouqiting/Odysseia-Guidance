@@ -259,6 +259,7 @@ def get_logs(request: Request, date: str | None = None):
         return JSONResponse(
             {
                 "logs": content,
+                "entries": tail_lines,
                 "date": current_date,
                 "tail_lines": BOT_LOG_TAIL_LINES,
             }
@@ -276,10 +277,12 @@ def get_webui_logs(request: Request):
     if not is_logged_in(request):
         return unauthorized_response(api=True)
     try:
-        content = "\n".join(WEBUI_LOG_BUFFER)
+        entries = list(WEBUI_LOG_BUFFER)
+        content = "\n".join(entries)
         return JSONResponse(
             {
                 "logs": content,
+                "entries": entries,
                 "tail_lines": WEBUI_LOG_TAIL_LINES,
             }
         )

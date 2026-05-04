@@ -413,7 +413,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const controlSyncText = document.getElementById('control-sync-text');
 
     let fullBotLogContent = '';
+    let fullBotLogEntries = [];
     let fullWebUILogContent = '';
+    let fullWebUILogEntries = [];
     let selectedTimezone = localStorage.getItem('selectedTimezone') || Intl.DateTimeFormat().resolvedOptions().timeZone;
     let preferredTheme = localStorage.getItem('preferredTheme') || 'system';
     let botAutoScrollEnabled = false;
@@ -468,6 +470,58 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const getSelectedLogLevels = (container) =>
         Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map((input) => input.value);
+
+    const BOT_LOG_ENTRY_START_REGEX = /^\[\d{4}[/-]\d{1,2}[/-]\d{1,2} \d{2}:\d{2}:\d{2}\] \[(DEBUG|INFO|WARNING|ERROR|CRITICAL)\]/;
+    const WEBUI_LOG_ENTRY_START_REGEX = /^\d{4}-\d{2}-\d{2} .* - (DEBUG|INFO|WARNING|ERROR|CRITICAL) - /;
+
+    const splitLogEntries = (content, startRegex) => {
+        const sourceLines = content.split('\n');
+        const entries = [];
+        let currentEntry = '';
+
+        sourceLines.forEach((line) => {
+            if (!line.trim()) {
+                return;
+            }
+
+            if (startRegex.test(line)) {
+                if (currentEntry) {
+                    entries.push(currentEntry);
+                }
+                currentEntry = line;
+                return;
+            }
+
+            currentEntry = currentEntry ? `${currentEntry}\n${line}` : line;
+        });
+
+        if (currentEntry) {
+            entries.push(currentEntry);
+        }
+
+        return entries;
+    };
+
+    const countEntryLines = (entry) => entry.split('\n').filter((line) => line.trim()).length;
+
+    const getBotLogLevel = (entry) => {
+        const match = entry.match(BOT_LOG_ENTRY_START_REGEX);
+        return match ? match[1] : '';
+    };
+
+    const getWebUILogLevel = (entry) => {
+        const match = entry.match(WEBUI_LOG_ENTRY_START_REGEX);
+        return match ? match[1] : '';
+    };
+
+    const getLogClassByLevel = (level) => {
+        if (level === 'CRITICAL') return 'log-critical';
+        if (level === 'ERROR') return 'log-error';
+        if (level === 'WARNING') return 'log-warning';
+        if (level === 'INFO') return 'log-info';
+        if (level === 'DEBUG') return 'log-debug';
+        return '';
+    };
 
     const scrollLogToBottom = (container) => {
         container.scrollTop = container.scrollHeight;
@@ -627,18 +681,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const renderBotLogs = () => {
         const regexStr = botRegexInput.value.trim();
         const selectedLevels = getSelectedLogLevels(botLogLevelFilter);
-        let lines = fullBotLogContent.split('\n').filter((line) => line.trim());
+        let entries = fullBotLogEntries.length
+            ? [...fullBotLogEntries]
+            : splitLogEntries(fullBotLogContent, BOT_LOG_ENTRY_START_REGEX);
 
         if (!selectedLevels.length) {
-            lines = [];
+            entries = [];
         } else {
-            lines = lines.filter((line) => selectedLevels.some((level) => line.includes(`[${level}]`)));
+            entries = entries.filter((entry) => selectedLevels.includes(getBotLogLevel(entry)));
         }
 
         if (regexStr) {
             try {
                 const regex = new RegExp(regexStr, 'i');
-                lines = lines.filter((line) => regex.test(line));
+                entries = entries.filter((entry) => regex.test(entry));
             } catch (error) {
                 syncLogContent(botLogContainer, botLogRenderState, 'Invalid Regex...', 'text');
                 if (botLogRenderState.pending) {
@@ -649,7 +705,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        if (!lines.length) {
+        if (!entries.length) {
             syncLogContent(botLogContainer, botLogRenderState, 'No matching logs.', 'text');
             if (botLogRenderState.pending) {
                 return;
@@ -660,23 +716,20 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        const html = lines.map((line) => {
-            const localizedLine = escapeHtml(localizeBotLogTimestamp(line));
-            if (localizedLine.includes('[CRITICAL]')) return `<div class="log-line log-critical">${localizedLine}</div>`;
-            if (localizedLine.includes('[ERROR]')) return `<div class="log-line log-error">${localizedLine}</div>`;
-            if (localizedLine.includes('[WARNING]')) return `<div class="log-line log-warning">${localizedLine}</div>`;
-            if (localizedLine.includes('[INFO]')) return `<div class="log-line log-info">${localizedLine}</div>`;
-            if (localizedLine.includes('[DEBUG]')) return `<div class="log-line log-debug">${localizedLine}</div>`;
-            return `<div class="log-line">${localizedLine}</div>`;
+        const visibleLineCount = entries.reduce((total, entry) => total + countEntryLines(entry), 0);
+        const html = entries.map((entry) => {
+            const localizedEntry = escapeHtml(localizeBotLogTimestamp(entry));
+            const logClass = getLogClassByLevel(getBotLogLevel(entry));
+            return `<div class="log-line ${logClass}">${localizedEntry}</div>`;
         }).join('');
 
         const rendered = syncLogContent(botLogContainer, botLogRenderState, html, 'html');
         if (botLogRenderState.pending) {
             return;
         }
-        botLogSummary.textContent = `${lines.length} 行日志，时区 ${selectedTimezone}`;
-        document.getElementById('dashboard-log-count-text').textContent = String(lines.length);
-        document.getElementById('dashboard-log-lines-text').textContent = `${lines.length} 行 Bot 日志`;
+        botLogSummary.textContent = `${entries.length} 条日志，${visibleLineCount} 行内容，时区 ${selectedTimezone}`;
+        document.getElementById('dashboard-log-count-text').textContent = String(entries.length);
+        document.getElementById('dashboard-log-lines-text').textContent = `${visibleLineCount} 行 Bot 日志`;
         if (botAutoScrollEnabled && rendered) {
             scrollLogToBottom(botLogContainer);
         }
@@ -685,21 +738,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const renderWebUILogs = () => {
         const regexStr = webuiRegexInput.value.trim();
         const selectedLevels = getSelectedLogLevels(webuiLogLevelFilter);
-        let lines = fullWebUILogContent.split('\n').filter((line) => line.trim());
+        let entries = fullWebUILogEntries.length
+            ? [...fullWebUILogEntries]
+            : splitLogEntries(fullWebUILogContent, WEBUI_LOG_ENTRY_START_REGEX);
 
         if (!selectedLevels.length) {
-            lines = [];
+            entries = [];
         } else {
-            lines = lines.filter((line) => {
-                const upper = line.toUpperCase();
-                return selectedLevels.some((level) => upper.includes(` ${level} `));
-            });
+            entries = entries.filter((entry) => selectedLevels.includes(getWebUILogLevel(entry)));
         }
 
         if (regexStr) {
             try {
                 const regex = new RegExp(regexStr, 'i');
-                lines = lines.filter((line) => regex.test(line));
+                entries = entries.filter((entry) => regex.test(entry));
             } catch (error) {
                 syncLogContent(webuiLogContainer, webuiLogRenderState, 'Invalid Regex...', 'text');
                 if (webuiLogRenderState.pending) {
@@ -710,7 +762,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        if (!lines.length) {
+        if (!entries.length) {
             syncLogContent(webuiLogContainer, webuiLogRenderState, 'No matching logs.', 'text');
             if (webuiLogRenderState.pending) {
                 return;
@@ -720,23 +772,19 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        const html = lines.map((line) => {
-            const escapedLine = escapeHtml(line);
-            const upper = escapedLine.toUpperCase();
-            if (upper.includes(' CRITICAL ')) return `<div class="log-line log-critical">${escapedLine}</div>`;
-            if (upper.includes(' ERROR ')) return `<div class="log-line log-error">${escapedLine}</div>`;
-            if (upper.includes(' WARNING ')) return `<div class="log-line log-warning">${escapedLine}</div>`;
-            if (upper.includes(' INFO ')) return `<div class="log-line log-info">${escapedLine}</div>`;
-            if (upper.includes(' DEBUG ')) return `<div class="log-line log-debug">${escapedLine}</div>`;
-            return `<div class="log-line">${escapedLine}</div>`;
+        const visibleLineCount = entries.reduce((total, entry) => total + countEntryLines(entry), 0);
+        const html = entries.map((entry) => {
+            const escapedEntry = escapeHtml(entry);
+            const logClass = getLogClassByLevel(getWebUILogLevel(entry));
+            return `<div class="log-line ${logClass}">${escapedEntry}</div>`;
         }).join('');
 
         const rendered = syncLogContent(webuiLogContainer, webuiLogRenderState, html, 'html');
         if (webuiLogRenderState.pending) {
             return;
         }
-        webuiLogSummary.textContent = `${lines.length} 行 WebUI 日志`;
-        document.getElementById('dashboard-webui-count-text').textContent = String(lines.length);
+        webuiLogSummary.textContent = `${entries.length} 条 WebUI 日志，${visibleLineCount} 行内容`;
+        document.getElementById('dashboard-webui-count-text').textContent = String(entries.length);
         document.getElementById('dashboard-webui-state-text').textContent = `最近刷新 ${formatTimestamp()}`;
         if (webuiAutoScrollEnabled && rendered) {
             scrollLogToBottom(webuiLogContainer);
@@ -762,12 +810,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/logs');
             const data = await response.json();
             fullBotLogContent = data.logs || '';
+            fullBotLogEntries = Array.isArray(data.entries)
+                ? data.entries.filter((entry) => typeof entry === 'string' && entry.trim())
+                : splitLogEntries(fullBotLogContent, BOT_LOG_ENTRY_START_REGEX);
             if (data.tail_lines) {
                 botLogSummary.textContent = `显示最近 ${data.tail_lines} 条缓存日志，时区 ${selectedTimezone}`;
             }
             renderBotLogs();
         } catch (error) {
             fullBotLogContent = '';
+            fullBotLogEntries = [];
             syncLogContent(botLogContainer, botLogRenderState, 'Error fetching Bot logs.', 'text');
             botLogSummary.textContent = 'Bot 日志加载失败';
         }
@@ -778,12 +830,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/webui-logs');
             const data = await response.json();
             fullWebUILogContent = data.logs || '';
+            fullWebUILogEntries = Array.isArray(data.entries)
+                ? data.entries.filter((entry) => typeof entry === 'string' && entry.trim())
+                : splitLogEntries(fullWebUILogContent, WEBUI_LOG_ENTRY_START_REGEX);
             if (data.tail_lines) {
                 webuiLogSummary.textContent = `显示最近 ${data.tail_lines} 行 WebUI 日志`;
             }
             renderWebUILogs();
         } catch (error) {
             fullWebUILogContent = '';
+            fullWebUILogEntries = [];
             syncLogContent(webuiLogContainer, webuiLogRenderState, 'Error fetching WebUI logs.', 'text');
             webuiLogSummary.textContent = 'WebUI 日志加载失败';
         }
