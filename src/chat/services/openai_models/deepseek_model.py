@@ -60,6 +60,20 @@ class DeepSeekModelClient:
             return False
         return True
 
+    @staticmethod
+    def _resolve_remote_image_url(part: Dict[str, Any]) -> Optional[str]:
+        """优先使用可直接访问的远程图片 URL，避免把公开图片再转成 base64。"""
+        for key in ("image_url", "url", "proxy_url"):
+            candidate = part.get(key)
+            if not isinstance(candidate, str):
+                continue
+
+            normalized = candidate.strip()
+            if normalized.startswith("http://") or normalized.startswith("https://"):
+                return normalized
+
+        return None
+
     def build_turn_content(self, parts: List[Any]) -> List[Dict[str, Any]]:
         """
         构建 DeepSeek 多模态单条消息 content。
@@ -96,6 +110,16 @@ class DeepSeekModelClient:
 
                 if not self._is_supported_image_format(mime_type):
                     log.info("[DeepSeek] 跳过不支持的图片格式: %s", mime_type)
+                    continue
+
+                remote_image_url = self._resolve_remote_image_url(part)
+                if remote_image_url:
+                    content_blocks.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": remote_image_url},
+                        }
+                    )
                     continue
 
                 image_bytes: Optional[bytes] = None

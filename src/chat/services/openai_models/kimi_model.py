@@ -116,6 +116,20 @@ class KimiModelClient:
         return build_request_error_log_fields(e)
 
     @staticmethod
+    def _resolve_remote_image_url(part: Dict[str, Any]) -> Optional[str]:
+        """优先复用公网可访问的图片链接，减少 base64 体积。"""
+        for key in ("image_url", "url", "proxy_url"):
+            candidate = part.get(key)
+            if not isinstance(candidate, str):
+                continue
+
+            normalized = candidate.strip()
+            if normalized.startswith("http://") or normalized.startswith("https://"):
+                return normalized
+
+        return None
+
+    @staticmethod
     def should_enable_web_search(
         message: Optional[str], replied_message: Optional[str] = None
     ) -> bool:
@@ -268,6 +282,7 @@ class KimiModelClient:
 
             if isinstance(part, dict) and part.get("type") == "image":
                 mime_type = str(part.get("mime_type", "image/png"))
+                remote_image_url = self._resolve_remote_image_url(part)
                 image_bytes: Optional[bytes] = None
 
                 direct_bytes = part.get("data") or part.get("bytes")
@@ -314,11 +329,27 @@ class KimiModelClient:
                             )
                             continue
 
+                    if remote_image_url:
+                        content_blocks.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": remote_image_url},
+                            }
+                        )
+                        continue
+
                     image_b64 = base64.b64encode(image_bytes).decode("utf-8")
                     content_blocks.append(
                         {
                             "type": "image_url",
                             "image_url": {"url": f"data:{mime_type};base64,{image_b64}"},
+                        }
+                    )
+                elif remote_image_url:
+                    content_blocks.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": remote_image_url},
                         }
                     )
                 else:
