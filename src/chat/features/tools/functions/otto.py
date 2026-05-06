@@ -156,7 +156,7 @@ class OttoEngine:
                 else:
                     resolved.extend(self._resolve_chinese(item.value))
 
-        return resolved[:120]
+        return resolved[:11120]
 
     def _prepare_original(self, text: str) -> list[Segment]:
         segments: list[Segment] = [Segment("raw", text)]
@@ -424,8 +424,6 @@ async def otto_tool(
     text = str(params.text or "").strip()
     if not text:
         return "错误：活字印刷文本不能为空。"
-    if len(text) >= 120:
-        return "错误：活字印刷文本需少于 120 个字符。"
 
     display_filename = f"{_clean_filename(params.filename)}.wav"
 
