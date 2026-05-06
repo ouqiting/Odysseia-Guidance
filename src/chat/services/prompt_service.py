@@ -487,12 +487,6 @@ class PromptService:
         if "name" in image_data and image_data.get("name"):
             raw_part["name"] = image_data.get("name")
 
-        if "image_url" in image_data and image_data.get("image_url"):
-            raw_part["image_url"] = image_data.get("image_url")
-
-        if "proxy_url" in image_data and image_data.get("proxy_url"):
-            raw_part["proxy_url"] = image_data.get("proxy_url")
-
         return raw_part
 
     @staticmethod
@@ -510,8 +504,6 @@ class PromptService:
                     "mime_type": obj.get("mime_type", "image/png"),
                     "source": obj.get("source", "unknown"),
                     "name": obj.get("name"),
-                    "image_url": obj.get("image_url"),
-                    "proxy_url": obj.get("proxy_url"),
                     "data_size": data_size,
                 }
 

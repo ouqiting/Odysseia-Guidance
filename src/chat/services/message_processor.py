@@ -420,7 +420,6 @@ class MessageProcessor:
                         "mime_type": mime_type,
                         "data": image_bytes,
                         "source": source,
-                        "image_url": url,
                     }
                 )
 
@@ -475,7 +474,6 @@ class MessageProcessor:
                         "data": image_bytes,
                         "source": "emoji",
                         "name": emoji_name,
-                        "image_url": url,
                     }
                 )
                 modified_content = modified_content.replace(
@@ -521,7 +519,6 @@ class MessageProcessor:
                             "data": image_bytes,
                             "source": "sticker",
                             "name": sticker.name,
-                            "image_url": sticker_url,
                         }
                     )
                     sticker_texts.append(f"[贴纸: {sticker.name}]")
@@ -577,7 +574,6 @@ class MessageProcessor:
                             "data": image_bytes,
                             "source": "fakenitro_sticker",
                             "name": sticker_name,
-                            "image_url": sticker_url,
                         }
                     )
                     log.debug(f"成功提取FakeNitro贴纸: {sticker_name}")
@@ -638,7 +634,6 @@ class MessageProcessor:
                             "data": image_bytes,
                             "source": "fakenitro_emoji",
                             "name": emoji_name,
-                            "image_url": emoji_url,
                         }
                     )
                     log.debug(f"成功提取FakeNitro表情: {emoji_name}")
@@ -996,8 +991,6 @@ class MessageProcessor:
                                 "mime_type": attachment.content_type,
                                 "data": image_bytes,
                                 "source": "attachment",
-                                "image_url": getattr(attachment, "url", None),
-                                "proxy_url": getattr(attachment, "proxy_url", None),
                             }
                         )
                         log.debug(
