@@ -30,6 +30,7 @@ class CachedReplyMessage:
     reply_to_message_id: Optional[int] = None
     reply_to_author_display_name: Optional[str] = None
     has_attachments: bool = False
+    is_history_message: bool = True
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> Optional["CachedReplyMessage"]:
@@ -79,6 +80,7 @@ class CachedReplyMessage:
             reply_to_message_id=reply_to_message_id,
             reply_to_author_display_name=reply_to_author_display_name,
             has_attachments=bool(data.get("has_attachments", False)),
+            is_history_message=bool(data.get("is_history_message", True)),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -91,6 +93,7 @@ class CachedReplyMessage:
             "reply_to_message_id": self.reply_to_message_id,
             "reply_to_author_display_name": self.reply_to_author_display_name,
             "has_attachments": self.has_attachments,
+            "is_history_message": self.is_history_message,
         }
 
 
@@ -259,6 +262,9 @@ class ContextServiceTest:
             reply_to_author_display_name=incoming.reply_to_author_display_name
             or existing.reply_to_author_display_name,
             has_attachments=incoming.has_attachments or existing.has_attachments,
+            is_history_message=(
+                incoming.is_history_message or existing.is_history_message
+            ),
         )
 
     def __init__(self, bot: commands.Bot):
@@ -283,6 +289,7 @@ class ContextServiceTest:
             1,
             int(chat_config.CHANNEL_MEMORY_CONFIG.get("formatted_history_limit", 20)),
         )
+        self.MAX_REPLY_CACHE_SIZE = self.MAX_CACHE_SIZE * 2
 
         if bot:
             log.info("ContextServiceTest 已通过构造函数设置 bot 实例。")
@@ -341,12 +348,12 @@ class ContextServiceTest:
             log.warning(f"[单条消息缓存] 读取频道 {channel_id} 缓存文件失败: {e}")
             channel_cache.clear()
 
-        while len(channel_cache) > self.MAX_CACHE_SIZE:
+        while len(channel_cache) > self.MAX_REPLY_CACHE_SIZE:
             channel_cache.popitem(last=False)
 
         if channel_cache:
             log.info(
-                f"[单条消息缓存] 已加载频道 {channel_id} 缓存: {len(channel_cache)}/{self.MAX_CACHE_SIZE}。"
+                f"[单条消息缓存] 已加载频道 {channel_id} 缓存: {len(channel_cache)}/{self.MAX_REPLY_CACHE_SIZE}。"
             )
 
     def _save_channel_cache(self, channel_id: int) -> None:
@@ -717,14 +724,18 @@ class ContextServiceTest:
         )
 
     def _build_cached_reply_message_from_message(
-        self, message: discord.Message
+        self, message: discord.Message, *, is_history_message: bool = False
     ) -> CachedReplyMessage:
         active_snapshot = self._build_active_cached_message_from_message(message)
-        return self._reply_entry_from_active_entry(active_snapshot)
+        return self._reply_entry_from_active_entry(
+            active_snapshot, is_history_message=is_history_message
+        )
 
     @staticmethod
     def _reply_entry_from_active_entry(
         entry: ActiveCachedMessage,
+        *,
+        is_history_message: bool = True,
     ) -> CachedReplyMessage:
         return CachedReplyMessage(
             message_id=entry.message_id,
@@ -735,6 +746,7 @@ class ContextServiceTest:
             reply_to_message_id=entry.reply_to_message_id,
             reply_to_author_display_name=entry.reply_to_author_display_name,
             has_attachments=entry.has_attachments,
+            is_history_message=is_history_message,
         )
 
     @staticmethod
@@ -868,11 +880,12 @@ class ContextServiceTest:
         self._ensure_channel_cache_loaded(channel_id)
         channel_cache = self._get_channel_cache(channel_id)
         cached_reference_map: Dict[int, CachedReplyMessage] = dict(channel_cache)
+        history_message_ids = {entry.message_id for entry in history_entries}
 
         for entry in history_entries:
             cached_reference_map[entry.message_id] = self._merge_reply_entries(
                 cached_reference_map.get(entry.message_id),
-                self._reply_entry_from_active_entry(entry),
+                self._reply_entry_from_active_entry(entry, is_history_message=True),
             )
 
         ids_to_fetch = {
@@ -895,7 +908,10 @@ class ContextServiceTest:
 
                     cached_reference_map[message.id] = self._merge_reply_entries(
                         cached_reference_map.get(message.id),
-                        self._build_cached_reply_message_from_message(message),
+                        self._build_cached_reply_message_from_message(
+                            message,
+                            is_history_message=message.id in history_message_ids,
+                        ),
                     )
                     successful_fetches += 1
                 except discord.NotFound:
@@ -935,13 +951,28 @@ class ContextServiceTest:
                 continue
             refreshed_cache[refreshed_entry.message_id] = refreshed_entry
 
+            if not ref_msg or ref_msg.message_id in refreshed_cache:
+                continue
+
+            refreshed_cache[ref_msg.message_id] = CachedReplyMessage(
+                message_id=ref_msg.message_id,
+                author_display_name=ref_msg.author_display_name,
+                content=ref_msg.content,
+                created_at_ts=ref_msg.created_at_ts,
+                is_bot=ref_msg.is_bot,
+                reply_to_message_id=ref_msg.reply_to_message_id,
+                reply_to_author_display_name=ref_msg.reply_to_author_display_name,
+                has_attachments=ref_msg.has_attachments,
+                is_history_message=ref_msg.message_id in history_message_ids,
+            )
+
         channel_cache.clear()
         channel_cache.update(refreshed_cache)
         self._save_channel_cache(channel_id)
 
         if refreshed_cache:
             log.info(
-                f"[单条消息缓存] 频道 {channel_id} 本轮缓存已刷新: {len(channel_cache)}/{self.MAX_CACHE_SIZE}。"
+                f"[单条消息缓存] 频道 {channel_id} 本轮缓存已刷新: {len(channel_cache)}/{self.MAX_REPLY_CACHE_SIZE}。"
             )
         else:
             log.info(f"[单条消息缓存] 频道 {channel_id} 本轮无引用缓存，已清空。")
@@ -1003,6 +1034,7 @@ class ContextServiceTest:
             persisted_reply_entries = [
                 self._active_entry_from_reply_entry(entry)
                 for entry in self._get_channel_cache(channel_id).values()
+                if entry.is_history_message
             ]
 
             live_cached_entries = self._collect_live_cached_snapshots(channel_id)

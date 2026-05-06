@@ -586,3 +586,104 @@ async def test_persisted_active_cache_and_live_cache_are_deduplicated(
     assert "新内容" in history_text
     assert "旧内容" not in history_text
     assert history_text.count("新内容") == 1
+
+
+@pytest.mark.asyncio
+async def test_reply_cache_persists_reference_targets_to_avoid_repeat_fetch(
+    configured_context_module: Path,
+):
+    channel = FakeChannel(channel_id=434)
+    now = datetime.now(timezone.utc)
+    referenced_message = build_message(
+        4300,
+        channel,
+        author_name="Alice",
+        content="被引用的旧消息",
+        created_at=now - timedelta(minutes=10),
+    )
+    reply_message = build_message(
+        4301,
+        channel,
+        author_name="Bob",
+        content="引用旧消息的新回复",
+        created_at=now,
+        reply_to_message_id=4300,
+    )
+    channel._fetched_messages = {4300: referenced_message}
+
+    service = context_module.ContextServiceTest(FakeBot(channels=[channel]))
+    await service.record_message_for_active_cache(reply_message)
+    await service.flush_pending_active_messages(channel.id)
+
+    await service.get_formatted_channel_history_new(
+        channel.id, user_id=1, guild_id=1
+    )
+    channel.fetch_message.assert_awaited_once_with(4300)
+
+    reply_cache_file = (
+        configured_context_module
+        / "reply_message_cache"
+        / f"reply_cache_{channel.id}.json"
+    )
+    saved_entries = context_module.json.loads(
+        reply_cache_file.read_text(encoding="utf-8")
+    )
+    assert {entry["message_id"] for entry in saved_entries} == {4300, 4301}
+    assert next(entry for entry in saved_entries if entry["message_id"] == 4300)[
+        "is_history_message"
+    ] is False
+
+    channel.fetch_message.reset_mock()
+
+    rebuilt_service = context_module.ContextServiceTest(FakeBot(channels=[channel]))
+    await rebuilt_service.get_formatted_channel_history_new(
+        channel.id, user_id=1, guild_id=1
+    )
+
+    channel.fetch_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reply_cache_restore_history_ignores_reference_only_entries(
+    configured_context_module: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    set_active_cache_enabled(monkeypatch, False)
+    channel = FakeChannel(channel_id=444)
+    now = datetime.now(timezone.utc)
+    history_entry = context_module.CachedReplyMessage(
+        message_id=4401,
+        author_display_name="Bob",
+        content="最近消息",
+        created_at_ts=now.timestamp(),
+        reply_to_message_id=4400,
+        reply_to_author_display_name="Alice",
+    )
+    reference_only_entry = context_module.CachedReplyMessage(
+        message_id=4400,
+        author_display_name="Alice",
+        content="较早的被引用消息",
+        created_at_ts=(now - timedelta(minutes=5)).timestamp(),
+        is_history_message=False,
+    )
+
+    reply_cache_dir = configured_context_module / "reply_message_cache"
+    reply_cache_dir.mkdir(exist_ok=True)
+    cache_file = reply_cache_dir / f"reply_cache_{channel.id}.json"
+    cache_file.write_text(
+        context_module.json.dumps(
+            [reference_only_entry.to_dict(), history_entry.to_dict()],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    service = context_module.ContextServiceTest(FakeBot(channels=[channel]))
+    context = await service.get_formatted_channel_history_new(
+        channel.id, user_id=1, guild_id=1
+    )
+    history_text = extract_history_text(context)
+
+    assert "最近消息" in history_text
+    assert "[Bob][回复 Alice]: 最近消息" in history_text
+    assert "较早的被引用消息" not in history_text
