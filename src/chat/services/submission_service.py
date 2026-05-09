@@ -305,14 +305,77 @@ class SubmissionService:
             )
             return False, "❌ 提交审核时发生错误，你的购买费用已自动退还。"
 
-        # 5. 启动审核流程
-        assert review_service is not None
-        asyncio.create_task(review_service.start_review(pending_id))
-        log.info(
-            f"已为用户 {interaction.user.id} 的个人档案 (pending_id: {pending_id}) 创建审核任务。"
-        )
+        # 5. 购买个人名片走直通逻辑：直接批准，无需公开审核
+        conn = None
+        try:
+            conn = self._get_db_connection()
+            if not conn:
+                raise RuntimeError("无法获取待审核数据库连接。")
 
-        return True, "✅ 你的名片已成功提交审核！审核通过后将自动生效。"
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM pending_entries WHERE id = ?",
+                (pending_id,),
+            )
+            entry = cursor.fetchone()
+            if not entry:
+                raise RuntimeError(f"无法找到待审核条目 #{pending_id}。")
+
+            assert review_service is not None
+            await review_service.approve_entry(
+                pending_id=pending_id,
+                entry=entry,
+                message=None,
+                conn=conn,
+            )
+
+            cursor.execute(
+                "SELECT status FROM pending_entries WHERE id = ?",
+                (pending_id,),
+            )
+            status_row = cursor.fetchone()
+            if not status_row or status_row["status"] != "approved":
+                raise RuntimeError(
+                    f"个人名片直通批准未成功完成，pending_id={pending_id}。"
+                )
+
+            log.info(
+                f"用户 {interaction.user.id} 的个人名片已直通批准 (pending_id: {pending_id})。"
+            )
+            return True, "✅ **神所娘后门**: 个人名片已成功添加，无需审核。"
+        except Exception as e:
+            log.error(
+                f"直通批准用户 {interaction.user.id} 的个人名片失败 (pending_id: {pending_id}): {e}",
+                exc_info=True,
+            )
+
+            await coin_service.add_coins(
+                user_id=interaction.user.id,
+                amount=price,
+                reason=f"个人名片直通批准失败自动退款 (item_id: {item_id})",
+            )
+
+            cleanup_conn = self._get_db_connection()
+            if cleanup_conn:
+                try:
+                    cleanup_cursor = cleanup_conn.cursor()
+                    cleanup_cursor.execute(
+                        "DELETE FROM pending_entries WHERE id = ? AND status = 'pending'",
+                        (pending_id,),
+                    )
+                    cleanup_conn.commit()
+                except Exception as cleanup_error:
+                    log.error(
+                        f"清理失败的个人名片待审核条目 #{pending_id} 时出错: {cleanup_error}",
+                        exc_info=True,
+                    )
+                finally:
+                    cleanup_conn.close()
+
+            return False, "❌ 创建个人名片时发生错误，你的购买费用已自动退还。"
+        finally:
+            if conn:
+                conn.close()
 
     async def submit_work_event(
         self,
