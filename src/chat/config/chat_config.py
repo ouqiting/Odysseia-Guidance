@@ -104,6 +104,20 @@ COMFYUI_CONFIG = {
     "IMAGE_OUTPUT_NODE_ID": "2341",
 }
 
+# --- GPT Image 2 投喂生图配置 ---
+GPT_IMAGE_CONFIG = {
+    "API_KEY": os.getenv("GPT_IMAGE_API_KEY", ""),
+    "BASE_URL": os.getenv("GPT_IMAGE_BASE_URL", "https://api.openai.com/v1"),
+    "MODEL": os.getenv("GPT_IMAGE_MODEL", "gpt-image-2"),
+    "SIZE": "1024x1024",
+    "QUALITY": "medium",
+    "TIMEOUT": 120,
+    "REFERENCE_IMAGE_URL": os.getenv(
+        "GPT_IMAGE_REFERENCE_URL",
+        "https://cdn.discordapp.com/attachments/1403347767912562728/1418576178326802524/3_632830043818943_00001_.png",
+    ),
+}
+
 # --- 塔罗牌占卜功能配置 ---
 TAROT_CONFIG = {
     "CARDS_PATH": "src/chat/features/tarot/cards/",  # 存放78张塔罗牌图片的目录路径

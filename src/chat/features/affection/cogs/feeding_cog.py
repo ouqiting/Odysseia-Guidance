@@ -1,6 +1,8 @@
 import discord
 import json
 import io
+import asyncio
+import contextlib
 from discord import app_commands
 from discord.ext import commands
 
@@ -9,6 +11,7 @@ from src.chat.features.affection.service.affection_service import AffectionServi
 from src.chat.features.affection.service.feeding_service import feeding_service
 from src.chat.features.odysseia_coin.service.coin_service import CoinService
 from src.chat.services.gemini_service import gemini_service
+from src.chat.services.gpt_image_service import gpt_image_service
 from src.chat.services.prompt_service import prompt_service
 from src.chat.config.chat_config import FEEDING_CONFIG, PROMPT_CONFIG
 from src.chat.config import chat_config
@@ -73,8 +76,31 @@ class FeedingCog(commands.Cog):
             )
             return
 
+        image_generation_task = None
+
         try:
             image_bytes = await image.read()
+            is_unrestricted = (
+                interaction.channel.id in chat_config.UNRESTRICTED_CHANNEL_IDS
+                or isinstance(interaction.channel, discord.Thread)
+            )
+
+            if is_unrestricted and gpt_image_service.is_available:
+                feeding_image_value = await chat_db_manager.get_global_setting(
+                    "feeding_image_enabled"
+                )
+                feeding_image_enabled = (
+                    feeding_image_value.lower() in ("true", "1", "yes", "on")
+                    if feeding_image_value is not None
+                    else True
+                )
+                if feeding_image_enabled:
+                    image_generation_task = asyncio.create_task(
+                        gpt_image_service.generate_feeding_image(
+                            feed_image_bytes=image_bytes,
+                            feed_mime_type=image.content_type,
+                        )
+                    )
 
             # 构建包含神所娘人设的提示词
             persona_part = extract_persona_prompt(
@@ -118,6 +144,13 @@ class FeedingCog(commands.Cog):
             if coin_gain > 0:
                 await self.coin_service.add_coins(user_id, coin_gain, reason="投喂奖励")
 
+            generated_image_bytes = None
+            if image_generation_task is not None:
+                try:
+                    generated_image_bytes = await image_generation_task
+                except Exception as e:
+                    logger.warning(f"GPT Image 投喂生图失败，将回退默认图: {e}")
+
             # 替换表情并添加奖励消息
             evaluation_with_emojis = replace_emojis(evaluation)
 
@@ -148,13 +181,16 @@ class FeedingCog(commands.Cog):
             # 将用户上传的图片作为缩略图
             file = discord.File(fp=io.BytesIO(image_bytes), filename=image.filename)
             embed.set_thumbnail(url=f"attachment://{image.filename}")
+            attachments = [file]
 
-            # 检查是否在豁免频道，如果是，则显示大图
-            is_unrestricted = (
-                interaction.channel.id in chat_config.UNRESTRICTED_CHANNEL_IDS
-                or isinstance(interaction.channel, discord.Thread)
-            )
-            if is_unrestricted:
+            if generated_image_bytes:
+                generated_file = discord.File(
+                    fp=io.BytesIO(generated_image_bytes),
+                    filename="feeding_generated.png",
+                )
+                embed.set_image(url="attachment://feeding_generated.png")
+                attachments.append(generated_file)
+            elif is_unrestricted:
                 sticker_url = FEEDING_CONFIG.get("RESPONSE_IMAGE_URL")
                 if sticker_url:
                     embed.set_image(url=sticker_url)
@@ -166,7 +202,7 @@ class FeedingCog(commands.Cog):
             await self.feeding_service.record_feeding(user_id)
 
             await interaction.edit_original_response(
-                content=None, embed=embed, attachments=[file]
+                content=None, embed=embed, attachments=attachments
             )
 
         except json.JSONDecodeError:
@@ -179,6 +215,11 @@ class FeedingCog(commands.Cog):
             await interaction.edit_original_response(
                 content="啊呀，不小心噎着了！等、等我一下，稍后再试试看！"
             )
+        finally:
+            if image_generation_task is not None and not image_generation_task.done():
+                image_generation_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await image_generation_task
 
 
 async def setup(bot: commands.Bot):
