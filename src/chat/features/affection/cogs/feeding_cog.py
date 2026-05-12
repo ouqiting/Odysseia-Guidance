@@ -3,6 +3,7 @@ import json
 import io
 import asyncio
 import contextlib
+from pathlib import Path
 from discord import app_commands
 from discord.ext import commands
 
@@ -21,6 +22,7 @@ from src.chat.services.event_service import event_service
 import logging
 
 logger = logging.getLogger(__name__)
+WAITING_IMAGE_PATH = Path(__file__).resolve().parents[5] / "assets" / "waiting_for_image.png"
 
 
 class FeedingCog(commands.Cog):
@@ -77,12 +79,11 @@ class FeedingCog(commands.Cog):
             return
 
         image_generation_task = None
+        background_image_update_scheduled = False
 
         try:
             image_bytes = await image.read()
-            if not gpt_image_service.is_available:
-                logger.info("投喂生图未触发: reason=GPT Image 服务不可用")
-            else:
+            if gpt_image_service.is_available:
                 feeding_image_value = await chat_db_manager.get_global_setting(
                     "feeding_image_enabled"
                 )
@@ -92,21 +93,12 @@ class FeedingCog(commands.Cog):
                     else True
                 )
                 if feeding_image_enabled:
-                    logger.info(
-                        "投喂生图已触发: user_id=%s channel_id=%s mime=%s bytes=%s",
-                        user_id,
-                        getattr(interaction.channel, "id", None),
-                        image.content_type,
-                        len(image_bytes),
-                    )
                     image_generation_task = asyncio.create_task(
                         gpt_image_service.generate_feeding_image(
                             feed_image_bytes=image_bytes,
                             feed_mime_type=image.content_type,
                         )
                     )
-                else:
-                    logger.info("投喂生图未触发: reason=feeding_image_enabled 已关闭")
 
             # 构建包含神所娘人设的提示词
             persona_part = extract_persona_prompt(
@@ -151,7 +143,7 @@ class FeedingCog(commands.Cog):
                 await self.coin_service.add_coins(user_id, coin_gain, reason="投喂奖励")
 
             generated_image_bytes = None
-            if image_generation_task is not None:
+            if image_generation_task is not None and image_generation_task.done():
                 try:
                     generated_image_bytes = await image_generation_task
                 except Exception as e:
@@ -161,20 +153,6 @@ class FeedingCog(commands.Cog):
                         getattr(interaction.channel, "id", None),
                         e,
                     )
-                else:
-                    if generated_image_bytes:
-                        logger.info(
-                            "投喂生图成功: user_id=%s channel_id=%s output_bytes=%s",
-                            user_id,
-                            getattr(interaction.channel, "id", None),
-                            len(generated_image_bytes),
-                        )
-                    else:
-                        logger.warning(
-                            "投喂生图未返回图片数据，回退默认图: user_id=%s channel_id=%s",
-                            user_id,
-                            getattr(interaction.channel, "id", None),
-                        )
 
             # 替换表情并添加奖励消息
             evaluation_with_emojis = replace_emojis(evaluation)
@@ -189,49 +167,100 @@ class FeedingCog(commands.Cog):
             if system_message:
                 embed_description += f"\n\n{system_message}"
 
-            embed = discord.Embed(
-                description=embed_description,
-                color=discord.Color.pink(),  # 你可以自定义颜色
-            )
-
-            # 设置作者信息
-            embed.set_author(
-                name=interaction.user.display_name,
-                icon_url=interaction.user.display_avatar.url,
-            )
-
-            # 从配置中获取图片 URL
-            # --- 动态获取图片 ---
-
-            # 将用户上传的图片作为缩略图
-            file = discord.File(fp=io.BytesIO(image_bytes), filename=image.filename)
-            embed.set_thumbnail(url=f"attachment://{image.filename}")
-            attachments = [file]
-
-            if generated_image_bytes:
-                generated_file = discord.File(
-                    fp=io.BytesIO(generated_image_bytes),
-                    filename="feeding_generated.png",
+            def build_embed_with_assets(
+                *,
+                generated_bytes: bytes | None = None,
+                use_waiting_image: bool = False,
+            ) -> tuple[discord.Embed, list[discord.File]]:
+                embed = discord.Embed(
+                    description=embed_description,
+                    color=discord.Color.pink(),
                 )
-                embed.set_image(url="attachment://feeding_generated.png")
-                attachments.append(generated_file)
-            else:
-                sticker_url = FEEDING_CONFIG.get("RESPONSE_IMAGE_URL")
-                if sticker_url:
-                    logger.info(
-                        "投喂使用默认图: user_id=%s channel_id=%s url=%s",
+                embed.set_author(
+                    name=interaction.user.display_name,
+                    icon_url=interaction.user.display_avatar.url,
+                )
+
+                attachments = [
+                    discord.File(fp=io.BytesIO(image_bytes), filename=image.filename)
+                ]
+                embed.set_thumbnail(url=f"attachment://{image.filename}")
+
+                if generated_bytes:
+                    attachments.append(
+                        discord.File(
+                            fp=io.BytesIO(generated_bytes),
+                            filename="feeding_generated.png",
+                        )
+                    )
+                    embed.set_image(url="attachment://feeding_generated.png")
+                elif use_waiting_image and WAITING_IMAGE_PATH.exists():
+                    waiting_image_bytes = WAITING_IMAGE_PATH.read_bytes()
+                    attachments.append(
+                        discord.File(
+                            fp=io.BytesIO(waiting_image_bytes),
+                            filename="waiting_for_image.png",
+                        )
+                    )
+                    embed.set_image(url="attachment://waiting_for_image.png")
+                else:
+                    sticker_url = FEEDING_CONFIG.get("RESPONSE_IMAGE_URL")
+                    if sticker_url:
+                        embed.set_image(url=sticker_url)
+
+                embed.set_footer(text="神所娘对你的投喂做出回应...")
+                return embed, attachments
+
+            async def finalize_image_update() -> None:
+                try:
+                    final_generated_image_bytes = None
+                    if image_generation_task is not None:
+                        try:
+                            final_generated_image_bytes = await image_generation_task
+                        except Exception as e:
+                            logger.error(
+                                "投喂生图失败，回退默认图: user_id=%s channel_id=%s error=%s",
+                                user_id,
+                                getattr(interaction.channel, "id", None),
+                                e,
+                            )
+
+                    final_embed, final_attachments = build_embed_with_assets(
+                        generated_bytes=final_generated_image_bytes,
+                        use_waiting_image=False,
+                    )
+                    await interaction.edit_original_response(
+                        content=None,
+                        embed=final_embed,
+                        attachments=final_attachments,
+                    )
+                except Exception as e:
+                    logger.error(
+                        "投喂图片二次更新失败: user_id=%s channel_id=%s error=%s",
                         user_id,
                         getattr(interaction.channel, "id", None),
-                        sticker_url,
+                        e,
                     )
-                    embed.set_image(url=sticker_url)
-
-            # 添加页脚用于上下文识别
-            embed.set_footer(text="神所娘对你的投喂做出回应...")
 
             # 记录投喂事件
             await self.feeding_service.record_feeding(user_id)
 
+            if image_generation_task is not None and not image_generation_task.done():
+                embed, attachments = build_embed_with_assets(
+                    generated_bytes=None,
+                    use_waiting_image=True,
+                )
+                await interaction.edit_original_response(
+                    content=None, embed=embed, attachments=attachments
+                )
+                background_image_update_scheduled = True
+                asyncio.create_task(finalize_image_update())
+                return
+
+            embed, attachments = build_embed_with_assets(
+                generated_bytes=generated_image_bytes,
+                use_waiting_image=False,
+            )
             await interaction.edit_original_response(
                 content=None, embed=embed, attachments=attachments
             )
@@ -247,7 +276,11 @@ class FeedingCog(commands.Cog):
                 content="啊呀，不小心噎着了！等、等我一下，稍后再试试看！"
             )
         finally:
-            if image_generation_task is not None and not image_generation_task.done():
+            if (
+                image_generation_task is not None
+                and not image_generation_task.done()
+                and not background_image_update_scheduled
+            ):
                 image_generation_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await image_generation_task

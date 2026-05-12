@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import base64
+import io
 import logging
 import random
 import time
@@ -8,6 +9,8 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+import requests
+from PIL import Image
 
 from src.chat.config.chat_config import GPT_IMAGE_CONFIG
 
@@ -106,6 +109,25 @@ class GPTImageService:
 
         return f"{exc.__class__.__name__}: {exc}"
 
+    def _normalize_image_to_png(self, image_bytes: bytes, image_label: str) -> bytes:
+        input_buffer = io.BytesIO(image_bytes)
+        output_buffer = io.BytesIO()
+        try:
+            with Image.open(input_buffer) as image:
+                normalized = image.convert("RGBA")
+                normalized.save(output_buffer, format="PNG", optimize=True)
+            return output_buffer.getvalue()
+        except Exception as exc:
+            log.error(
+                "GPTImageService: 图片规范化失败 label=%s error=%s",
+                image_label,
+                self._summarize_exception(exc),
+            )
+            raise
+        finally:
+            input_buffer.close()
+            output_buffer.close()
+
     async def generate_feeding_image(
         self,
         feed_image_bytes: bytes,
@@ -127,10 +149,6 @@ class GPTImageService:
 
         if self._reference_images:
             reference_bytes = random.choice(self._reference_images)
-            log.info(
-                "GPTImageService: 使用 EDIT 生图 reference_bytes=%s",
-                len(reference_bytes),
-            )
             try:
                 result = await self._try_edit_once(
                     feed_image_bytes=feed_image_bytes,
@@ -160,7 +178,6 @@ class GPTImageService:
                 )
             return result
 
-        log.info("GPTImageService: 未找到参考图，改用 GENERATE 生图")
         try:
             result = await self._try_generate_once()
         except Exception as exc:
@@ -193,6 +210,12 @@ class GPTImageService:
         reference_bytes: bytes,
     ) -> Optional[bytes]:
         client = self._get_client()
+        normalized_reference_bytes = self._normalize_image_to_png(
+            reference_bytes, "reference"
+        )
+        normalized_feed_bytes = self._normalize_image_to_png(
+            feed_image_bytes, "feed"
+        )
         prompt = (
             "参考第一张图的人物外貌、发型、服装和整体画风。"
             "让她正在开心地接住并吃掉第二张图里的内容。"
@@ -200,8 +223,8 @@ class GPTImageService:
             "自由构图，突出被投喂时的动作、表情和满足感，整体氛围温暖可爱。"
         )
         files = [
-            ("image", ("reference.png", reference_bytes, "image/png")),
-            ("image", ("feed.png", feed_image_bytes, feed_mime_type or "image/png")),
+            ("image", ("reference.png", normalized_reference_bytes, "image/png")),
+            ("image", ("feed.png", normalized_feed_bytes, "image/png")),
         ]
         data = {
             "model": self._model,
@@ -212,7 +235,23 @@ class GPTImageService:
             "response_format": "b64_json",
         }
 
-        response = await client.post("/images/edits", files=files, data=data)
+        prepared_request = requests.Request(
+            method="POST",
+            url=f"{self._base_url.rstrip('/')}/images/edits",
+            files=files,
+            data=data,
+        ).prepare()
+        body = prepared_request.body
+        if not isinstance(body, (bytes, bytearray)):
+            raise TypeError(
+                f"Unexpected multipart body type: {type(body).__name__}"
+            )
+
+        headers = {
+            "Content-Type": prepared_request.headers["Content-Type"],
+            "Content-Length": str(len(body)),
+        }
+        response = await client.post("/images/edits", content=body, headers=headers)
         response.raise_for_status()
         return self._extract_image(response.json())
 
