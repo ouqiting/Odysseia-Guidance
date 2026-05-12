@@ -63,8 +63,8 @@ class FeedingService:
 
         feedings_today = count_row[0] if count_row else 0
 
-        if feedings_today >= 3:
-            return False, "你今天已经给我吃三次啦,肚子饱饱的,明天再说吧！"
+        if feedings_today >= 9999:
+            return False, "你今天已经给我吃9999次啦,肚子饱饱的,明天再说吧！"
 
         return True, ""
 

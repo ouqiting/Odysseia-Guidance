@@ -66,8 +66,8 @@ class ConfessionService:
 
         confessions_today = count_row[0] if count_row else 0
 
-        if confessions_today >= 3:
-            return False, "今天已经忏悔三次了, 明天再说吧！"
+        if confessions_today >= 9999:
+            return False, "今天已经忏悔9999次了, 明天再说吧！"
 
         return True, ""
 
