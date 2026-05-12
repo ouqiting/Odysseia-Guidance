@@ -80,17 +80,7 @@ class FeedingCog(commands.Cog):
 
         try:
             image_bytes = await image.read()
-            is_unrestricted = (
-                interaction.channel.id in chat_config.UNRESTRICTED_CHANNEL_IDS
-                or isinstance(interaction.channel, discord.Thread)
-            )
-
-            if not is_unrestricted:
-                logger.info(
-                    "投喂生图未触发: channel_id=%s reason=频道不在豁免列表且不是帖子",
-                    getattr(interaction.channel, "id", None),
-                )
-            elif not gpt_image_service.is_available:
+            if not gpt_image_service.is_available:
                 logger.info("投喂生图未触发: reason=GPT Image 服务不可用")
             else:
                 feeding_image_value = await chat_db_manager.get_global_setting(
@@ -225,7 +215,7 @@ class FeedingCog(commands.Cog):
                 )
                 embed.set_image(url="attachment://feeding_generated.png")
                 attachments.append(generated_file)
-            elif is_unrestricted:
+            else:
                 sticker_url = FEEDING_CONFIG.get("RESPONSE_IMAGE_URL")
                 if sticker_url:
                     logger.info(
