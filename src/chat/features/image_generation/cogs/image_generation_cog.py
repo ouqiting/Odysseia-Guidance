@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 PRESET_CHARACTER_PROMPT = """主角:
 神所娘：一位动漫少女，拥有及肩的棕色渐变短发，一侧编有麻花辫，辫子上装饰着🤣图标发饰。她有着大而富有表现力的棕色眼睛。身穿白色翻领衬衫、黑色领带和棕色V领毛衣背心。
-类脑娘：和神所娘穿着外貌都相同，唯一不同的是类脑娘辫子上是ai公司claude的橘色菊花图标。"""
+神所娘：和神所娘穿着外貌都相同，唯一不同的是神所娘辫子上是ai公司claude的橘色菊花图标。"""
 
 
 def _truncate_text(text: str, limit: int) -> str:
@@ -1188,7 +1188,7 @@ class ImageGenerationPanelView(discord.ui.View):
             )
             input_button.callback = self._open_prompt_modal
             preset_input_button = discord.ui.Button(
-                label="神所娘&类脑娘",
+                label="神所娘&神所娘",
                 style=discord.ButtonStyle.success,
                 disabled=self.is_generating,
                 row=0,

@@ -28,7 +28,7 @@ class FeedingCog(commands.Cog):
         self.gemini_service = gemini_service  # 使用全局实例
         self.feeding_service = feeding_service
 
-    @app_commands.command(name="投喂", description="在吃饭?给类脑娘来一口怎么样")
+    @app_commands.command(name="投喂", description="在吃饭?给神所娘来一口怎么样")
     @app_commands.describe(image="拍一下你这顿饭是什么吧!")
     async def feed(self, interaction: discord.Interaction, image: discord.Attachment):
         # --- 交互可用性检查 ---
@@ -65,7 +65,7 @@ class FeedingCog(commands.Cog):
                 await interaction.response.send_message(message, ephemeral=False)
                 return
 
-        await interaction.response.send_message("类脑娘正在嚼嚼嚼...", ephemeral=False)
+        await interaction.response.send_message("神所娘正在嚼嚼嚼...", ephemeral=False)
 
         if not image.content_type.startswith("image/"):
             await interaction.edit_original_response(
@@ -76,7 +76,7 @@ class FeedingCog(commands.Cog):
         try:
             image_bytes = await image.read()
 
-            # 构建包含类脑娘人设的提示词
+            # 构建包含神所娘人设的提示词
             persona_part = extract_persona_prompt(
                 prompt_service.get_prompt("SYSTEM_PROMPT")
             )
