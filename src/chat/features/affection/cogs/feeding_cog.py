@@ -85,7 +85,14 @@ class FeedingCog(commands.Cog):
                 or isinstance(interaction.channel, discord.Thread)
             )
 
-            if is_unrestricted and gpt_image_service.is_available:
+            if not is_unrestricted:
+                logger.info(
+                    "投喂生图未触发: channel_id=%s reason=频道不在豁免列表且不是帖子",
+                    getattr(interaction.channel, "id", None),
+                )
+            elif not gpt_image_service.is_available:
+                logger.info("投喂生图未触发: reason=GPT Image 服务不可用")
+            else:
                 feeding_image_value = await chat_db_manager.get_global_setting(
                     "feeding_image_enabled"
                 )
@@ -95,12 +102,21 @@ class FeedingCog(commands.Cog):
                     else True
                 )
                 if feeding_image_enabled:
+                    logger.info(
+                        "投喂生图已触发: user_id=%s channel_id=%s mime=%s bytes=%s",
+                        user_id,
+                        getattr(interaction.channel, "id", None),
+                        image.content_type,
+                        len(image_bytes),
+                    )
                     image_generation_task = asyncio.create_task(
                         gpt_image_service.generate_feeding_image(
                             feed_image_bytes=image_bytes,
                             feed_mime_type=image.content_type,
                         )
                     )
+                else:
+                    logger.info("投喂生图未触发: reason=feeding_image_enabled 已关闭")
 
             # 构建包含神所娘人设的提示词
             persona_part = extract_persona_prompt(
@@ -149,7 +165,26 @@ class FeedingCog(commands.Cog):
                 try:
                     generated_image_bytes = await image_generation_task
                 except Exception as e:
-                    logger.warning(f"GPT Image 投喂生图失败，将回退默认图: {e}")
+                    logger.error(
+                        "投喂生图失败，回退默认图: user_id=%s channel_id=%s error=%s",
+                        user_id,
+                        getattr(interaction.channel, "id", None),
+                        e,
+                    )
+                else:
+                    if generated_image_bytes:
+                        logger.info(
+                            "投喂生图成功: user_id=%s channel_id=%s output_bytes=%s",
+                            user_id,
+                            getattr(interaction.channel, "id", None),
+                            len(generated_image_bytes),
+                        )
+                    else:
+                        logger.warning(
+                            "投喂生图未返回图片数据，回退默认图: user_id=%s channel_id=%s",
+                            user_id,
+                            getattr(interaction.channel, "id", None),
+                        )
 
             # 替换表情并添加奖励消息
             evaluation_with_emojis = replace_emojis(evaluation)
@@ -193,6 +228,12 @@ class FeedingCog(commands.Cog):
             elif is_unrestricted:
                 sticker_url = FEEDING_CONFIG.get("RESPONSE_IMAGE_URL")
                 if sticker_url:
+                    logger.info(
+                        "投喂使用默认图: user_id=%s channel_id=%s url=%s",
+                        user_id,
+                        getattr(interaction.channel, "id", None),
+                        sticker_url,
+                    )
                     embed.set_image(url=sticker_url)
 
             # 添加页脚用于上下文识别

@@ -3,6 +3,7 @@ import asyncio
 import base64
 import logging
 import random
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -81,25 +82,109 @@ class GPTImageService:
             )
         return self._client
 
+    def _summarize_exception(self, exc: Exception) -> str:
+        if isinstance(exc, httpx.HTTPStatusError):
+            response = exc.response
+            body_preview = ""
+            try:
+                body_preview = response.text[:500]
+            except Exception:
+                body_preview = "<unavailable>"
+            return (
+                f"HTTPStatusError status={response.status_code} "
+                f"url={response.request.method} {response.request.url} "
+                f"body={body_preview}"
+            )
+
+        if isinstance(exc, httpx.RequestError):
+            request = exc.request
+            return (
+                f"{exc.__class__.__name__} "
+                f"url={request.method} {request.url} "
+                f"detail={exc}"
+            )
+
+        return f"{exc.__class__.__name__}: {exc}"
+
     async def generate_feeding_image(
         self,
         feed_image_bytes: bytes,
         feed_mime_type: str,
     ) -> Optional[bytes]:
         if not self.is_available:
+            log.info("GPTImageService: 跳过投喂生图，原因=未配置 API key")
             return None
 
         await self._ensure_initialized()
+        start_time = time.perf_counter()
+        log.info(
+            "GPTImageService: 开始投喂生图 mime=%s bytes=%s refs=%s model=%s",
+            feed_mime_type,
+            len(feed_image_bytes),
+            len(self._reference_images),
+            self._model,
+        )
 
         if self._reference_images:
             reference_bytes = random.choice(self._reference_images)
-            return await self._try_edit_once(
-                feed_image_bytes=feed_image_bytes,
-                feed_mime_type=feed_mime_type,
-                reference_bytes=reference_bytes,
+            log.info(
+                "GPTImageService: 使用 EDIT 生图 reference_bytes=%s",
+                len(reference_bytes),
             )
+            try:
+                result = await self._try_edit_once(
+                    feed_image_bytes=feed_image_bytes,
+                    feed_mime_type=feed_mime_type,
+                    reference_bytes=reference_bytes,
+                )
+            except Exception as exc:
+                elapsed = time.perf_counter() - start_time
+                log.error(
+                    "GPTImageService: EDIT 生图失败 elapsed=%.2fs error=%s",
+                    elapsed,
+                    self._summarize_exception(exc),
+                )
+                raise
 
-        return await self._try_generate_once()
+            elapsed = time.perf_counter() - start_time
+            if result is None:
+                log.warning(
+                    "GPTImageService: EDIT 生图未返回图片数据 elapsed=%.2fs",
+                    elapsed,
+                )
+            else:
+                log.info(
+                    "GPTImageService: EDIT 生图成功 elapsed=%.2fs output_bytes=%s",
+                    elapsed,
+                    len(result),
+                )
+            return result
+
+        log.info("GPTImageService: 未找到参考图，改用 GENERATE 生图")
+        try:
+            result = await self._try_generate_once()
+        except Exception as exc:
+            elapsed = time.perf_counter() - start_time
+            log.error(
+                "GPTImageService: GENERATE 生图失败 elapsed=%.2fs error=%s",
+                elapsed,
+                self._summarize_exception(exc),
+            )
+            raise
+
+        elapsed = time.perf_counter() - start_time
+        if result is None:
+            log.warning(
+                "GPTImageService: GENERATE 生图未返回图片数据 elapsed=%.2fs",
+                elapsed,
+            )
+        else:
+            log.info(
+                "GPTImageService: GENERATE 生图成功 elapsed=%.2fs output_bytes=%s",
+                elapsed,
+                len(result),
+            )
+        return result
 
     async def _try_edit_once(
         self,
