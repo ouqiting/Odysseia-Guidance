@@ -160,7 +160,7 @@ class FeedingCog(commands.Cog):
                     embed.set_image(url=sticker_url)
 
             # 添加页脚用于上下文识别
-            embed.set_footer(text="类脑娘对你的投喂做出回应...")
+            embed.set_footer(text="神所娘对你的投喂做出回应...")
 
             # 记录投喂事件
             await self.feeding_service.record_feeding(user_id)
