@@ -14,13 +14,13 @@ log = logging.getLogger(__name__)
 class PersonalMemorySearchService:
     """
     从 community.personal_memory_chunks 中召回个人记忆条目：
-    - 先根据 query 取最相关 Top20
-    - 再随机补 5 条（排除 Top20，避免重复）
-    返回总计最多 25 条，用于 Prompt 注入。
+    - 先根据 query 取最相关 Top10
+    - 再随机补 5 条（排除 Top10，避免重复）
+    返回总计最多 15 条，用于 Prompt 注入。
     """
 
     def __init__(self):
-        self.top_k_relevant = 20
+        self.top_k_relevant = 10
         self.top_k_random = 5
 
     @staticmethod
