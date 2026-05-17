@@ -1,12 +1,17 @@
 import discord
 import logging
 import os
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from dotenv import load_dotenv, set_key
 from src.chat.utils.database import chat_db_manager
 from src.chat.services.event_service import event_service
 from src.chat.config import chat_config as app_config
 from src import config
+from src.chat.services.openai_fallback_service import (
+    OPENAI_FALLBACK_SECONDARY_MODEL_KEY,
+    OPENAI_FALLBACK_TERTIARY_MODEL_KEY,
+    SUPPORTED_OPENAI_FALLBACK_MODELS,
+)
 
 log = logging.getLogger(__name__)
 
@@ -320,6 +325,50 @@ class ChatSettingsService:
     async def set_ai_model(self, model: str) -> None:
         """设置全局AI模型。"""
         await self.db_manager.set_global_setting("ai_model", model)
+
+    async def get_openai_fallback_models(self) -> Tuple[str, str]:
+        """获取 OpenAI 三渠道回退中的第 2 / 第 3 渠道配置。"""
+        secondary = await self.db_manager.get_global_setting(
+            OPENAI_FALLBACK_SECONDARY_MODEL_KEY
+        )
+        tertiary = await self.db_manager.get_global_setting(
+            OPENAI_FALLBACK_TERTIARY_MODEL_KEY
+        )
+        return (
+            str(secondary or "").strip(),
+            str(tertiary or "").strip(),
+        )
+
+    @staticmethod
+    def validate_openai_fallback_model(model: Optional[str]) -> str:
+        normalized_model = str(model or "").strip()
+        if not normalized_model:
+            return ""
+        if normalized_model not in SUPPORTED_OPENAI_FALLBACK_MODELS:
+            allowed = ", ".join(SUPPORTED_OPENAI_FALLBACK_MODELS)
+            raise ValueError(
+                f"OpenAI 回退渠道仅支持以下模型之一：{allowed}"
+            )
+        return normalized_model
+
+    async def set_openai_fallback_models(
+        self,
+        *,
+        secondary_model: Optional[str],
+        tertiary_model: Optional[str],
+    ) -> None:
+        """设置 OpenAI 三渠道回退中的第 2 / 第 3 渠道。"""
+        normalized_secondary = self.validate_openai_fallback_model(secondary_model)
+        normalized_tertiary = self.validate_openai_fallback_model(tertiary_model)
+
+        await self.db_manager.set_global_setting(
+            OPENAI_FALLBACK_SECONDARY_MODEL_KEY,
+            normalized_secondary,
+        )
+        await self.db_manager.set_global_setting(
+            OPENAI_FALLBACK_TERTIARY_MODEL_KEY,
+            normalized_tertiary,
+        )
 
     async def get_current_summary_model(self) -> str:
         """Get the current personal-memory summary model."""

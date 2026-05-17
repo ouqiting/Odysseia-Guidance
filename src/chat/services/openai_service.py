@@ -8,6 +8,7 @@ import os
 import re
 import uuid
 from datetime import datetime
+from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Union, get_args, get_origin
 from zoneinfo import ZoneInfo
 
@@ -27,6 +28,7 @@ from src.chat.services.openai_models import (
     DeepSeekModelClient,
     KimiModelClient,
 )
+from src.chat.services.openai_models.custom_model import CustomModelChannelError
 from src.chat.utils.httpx_error_utils import build_request_error_log_fields
 from src.chat.services.prompt_service import prompt_service
 from src.chat.utils.image_utils import sanitize_image_to_size_limit
@@ -34,6 +36,31 @@ from src.database.database import AsyncSessionLocal
 from src.database.services.token_usage_service import token_usage_service
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class OpenAIChannelExecutionResult:
+    channel_name: str
+    response_text: str
+    used_model_name: str
+
+
+class OpenAIChannelExecutionFailure(Exception):
+    def __init__(
+        self,
+        *,
+        channel_name: str,
+        user_message: str,
+        failure_kind: str,
+        should_lock_channel: bool,
+        raw_error: Optional[BaseException] = None,
+    ) -> None:
+        super().__init__(user_message)
+        self.channel_name = channel_name
+        self.user_message = user_message
+        self.failure_kind = failure_kind
+        self.should_lock_channel = should_lock_channel
+        self.raw_error = raw_error
 
 
 class OpenAIService:
@@ -553,6 +580,67 @@ class OpenAIService:
         retrieval_query_embedding: Optional[List[float]] = None,
         rag_timeout_fallback: bool = False,
     ) -> str:
+        try:
+            result = await self.execute_channel_response(
+                user_id=user_id,
+                guild_id=guild_id,
+                message=message,
+                channel=channel,
+                replied_message=replied_message,
+                images=images,
+                text_attachments=text_attachments,
+                user_name=user_name,
+                channel_context=channel_context,
+                world_book_entries=world_book_entries,
+                personal_summary=personal_summary,
+                affection_status=affection_status,
+                user_profile_data=user_profile_data,
+                guild_name=guild_name,
+                location_name=location_name,
+                model_name=model_name,
+                user_id_for_settings=user_id_for_settings,
+                override_base_url=override_base_url,
+                videos=videos,
+                retrieval_query_text=retrieval_query_text,
+                retrieval_query_embedding=retrieval_query_embedding,
+                rag_timeout_fallback=rag_timeout_fallback,
+            )
+            return self._apply_blacklist_notice(
+                result.response_text,
+                blacklist_punishment_active,
+            )
+        except OpenAIChannelExecutionFailure as exc:
+            return self._apply_blacklist_notice(
+                exc.user_message,
+                blacklist_punishment_active,
+            )
+
+    async def execute_channel_response(
+        self,
+        user_id: int,
+        guild_id: int,
+        message: str,
+        channel: Optional[Any],
+        replied_message: Optional[str],
+        images: Optional[List[Dict]],
+        text_attachments: Optional[List[Dict[str, Any]]],
+        user_name: str,
+        channel_context: Optional[List[Dict]],
+        world_book_entries: Optional[List[Dict]],
+        personal_summary: Optional[str],
+        affection_status: Optional[Dict[str, Any]],
+        user_profile_data: Optional[Dict[str, Any]],
+        guild_name: str,
+        location_name: str,
+        model_name: Optional[str],
+        user_id_for_settings: Optional[str] = None,
+        blacklist_punishment_active: bool = False,
+        override_base_url: Optional[str] = None,
+        videos: Optional[List[Dict[str, Any]]] = None,
+        retrieval_query_text: Optional[str] = None,
+        retrieval_query_embedding: Optional[List[float]] = None,
+        rag_timeout_fallback: bool = False,
+    ) -> OpenAIChannelExecutionResult:
         """
         OpenAI 兼容专用通道（DeepSeek / Kimi / Custom）。
         """
@@ -589,22 +677,31 @@ class OpenAIService:
                 effective_model_name
             )
             if validation_error:
-                return self._apply_blacklist_notice(
-                    validation_error, blacklist_punishment_active
+                raise OpenAIChannelExecutionFailure(
+                    channel_name=effective_model_name,
+                    user_message=validation_error,
+                    failure_kind="validation_error",
+                    should_lock_channel=True,
                 )
         elif is_custom_model:
             validation_error = self.custom_model_client.get_validation_error(
                 runtime_config=custom_runtime_config
             )
             if validation_error:
-                return self._apply_blacklist_notice(
-                    validation_error, blacklist_punishment_active
+                raise OpenAIChannelExecutionFailure(
+                    channel_name=effective_model_name,
+                    user_message=validation_error,
+                    failure_kind="validation_error",
+                    should_lock_channel=True,
                 )
         else:
             validation_error = self.kimi_model_client.get_validation_error()
             if validation_error:
-                return self._apply_blacklist_notice(
-                    validation_error, blacklist_punishment_active
+                raise OpenAIChannelExecutionFailure(
+                    channel_name=effective_model_name,
+                    user_message=validation_error,
+                    failure_kind="validation_error",
+                    should_lock_channel=True,
                 )
 
         should_enable_kimi_web_search = False
@@ -615,8 +712,6 @@ class OpenAIService:
             )
 
         images = self._compress_images_for_vps_mode(images)
-
-        await chat_settings_service.increment_model_usage(effective_model_name)
 
         # 自动 RAG 检索
         if not world_book_entries and message:
@@ -1474,9 +1569,11 @@ class OpenAIService:
                             used_api_url=used_api_url,
                             response_text=response_text,
                         )
-                        return self._apply_blacklist_notice(
-                            "custom 通道返回了无法解析的流式响应，请稍后再试。",
-                            blacklist_punishment_active,
+                        raise OpenAIChannelExecutionFailure(
+                            channel_name=effective_model_name,
+                            user_message="custom 通道返回了无法解析的流式响应，请稍后再试。",
+                            failure_kind="invalid_stream_response",
+                            should_lock_channel=True,
                         )
 
                 try:
@@ -1500,9 +1597,11 @@ class OpenAIService:
                             used_kimi_key_tail,
                             body_preview,
                         )
-                        return self._apply_blacklist_notice(
-                            "Kimi 通道返回了非标准响应（非 JSON），请稍后再试。",
-                            blacklist_punishment_active,
+                        raise OpenAIChannelExecutionFailure(
+                            channel_name=effective_model_name,
+                            user_message="Kimi 通道返回了非标准响应（非 JSON），请稍后再试。",
+                            failure_kind="invalid_json_response",
+                            should_lock_channel=True,
                         )
 
                     if is_custom_model:
@@ -1518,9 +1617,11 @@ class OpenAIService:
                             used_api_url,
                             body_preview,
                         )
-                        return self._apply_blacklist_notice(
-                            "custom 通道返回了非标准响应（非 JSON），请稍后再试。",
-                            blacklist_punishment_active,
+                        raise OpenAIChannelExecutionFailure(
+                            channel_name=effective_model_name,
+                            user_message="custom 通道返回了非标准响应（非 JSON），请稍后再试。",
+                            failure_kind="invalid_json_response",
+                            should_lock_channel=True,
                         )
 
                     raise
@@ -1698,8 +1799,13 @@ class OpenAIService:
                     response_text = await self.post_process_response(
                         content, user_id, guild_id
                     )
-                    return self._apply_blacklist_notice(
-                        response_text, blacklist_punishment_active
+                    await chat_settings_service.increment_model_usage(
+                        effective_model_name
+                    )
+                    return OpenAIChannelExecutionResult(
+                        channel_name=effective_model_name,
+                        response_text=response_text,
+                        used_model_name=used_kimi_model_name,
                     )
 
                 if log_detailed:
@@ -1817,9 +1923,27 @@ class OpenAIService:
                     )
 
             self.last_called_tools = called_tool_names
-            return self._apply_blacklist_notice(
-                "哎呀，我好像陷入了一个复杂的思考循环里，换个话题聊聊吧！",
-                blacklist_punishment_active,
+            raise OpenAIChannelExecutionFailure(
+                channel_name=effective_model_name,
+                user_message="哎呀，我好像陷入了一个复杂的思考循环里，换个话题聊聊吧！",
+                failure_kind="max_calls_exceeded",
+                should_lock_channel=True,
+            )
+
+        except CustomModelChannelError as e:
+            log.error(
+                "[Custom] 渠道内部失败 | kind=%s | rotations=%s/%s | message=%s",
+                e.failure_kind,
+                e.api_key_rotation_count,
+                e.total_api_keys,
+                str(e),
+            )
+            raise OpenAIChannelExecutionFailure(
+                channel_name=effective_model_name,
+                user_message=str(e),
+                failure_kind=e.failure_kind,
+                should_lock_channel=True,
+                raw_error=e,
             )
 
         except NoAvailableKimiKeyError as e:
@@ -1828,8 +1952,12 @@ class OpenAIService:
             # 仅在特定消息时发送私信
             if "冷却" in err_msg:
                 await self.kimi_model_client.notify_alert(err_msg)
-            return self._apply_blacklist_notice(
-                err_msg, blacklist_punishment_active
+            raise OpenAIChannelExecutionFailure(
+                channel_name=effective_model_name,
+                user_message=err_msg,
+                failure_kind="no_available_kimi_key",
+                should_lock_channel=True,
+                raw_error=e,
             )
 
         except httpx.HTTPStatusError as e:
@@ -1845,9 +1973,12 @@ class OpenAIService:
             log.error(f"{channel_label} 致命错误详情: {response_text}")
 
             short_detail = response_text[:500] if response_text else "无响应体"
-            return self._apply_blacklist_notice(
-                f"{channel_label} 连接失败: {error_info}。详情: {short_detail}",
-                blacklist_punishment_active,
+            raise OpenAIChannelExecutionFailure(
+                channel_name=effective_model_name,
+                user_message=f"{channel_label} 连接失败: {error_info}。详情: {short_detail}",
+                failure_kind="http_status_error",
+                should_lock_channel=True,
+                raw_error=e,
             )
 
         except Exception as e:
@@ -1866,19 +1997,25 @@ class OpenAIService:
                     err_fields["request_url"],
                     exc_info=True,
                 )
-                return self._apply_blacklist_notice(
-                    (
+                raise OpenAIChannelExecutionFailure(
+                    channel_name=effective_model_name,
+                    user_message=(
                         f"哎呀，{channel_label} 网关好像闹别扭了：{err_fields['exc_type']}。"
                         "等会再试吧。"
                     ),
-                    blacklist_punishment_active,
+                    failure_kind="request_error",
+                    should_lock_channel=True,
+                    raw_error=e,
                 )
 
             error_info = f"{type(e).__name__}: {str(e)}"
             log.error(f"{channel_label} API 调用失败: {error_info}", exc_info=True)
-            return self._apply_blacklist_notice(
-                f"{channel_label} 连接失败: {error_info}。请检查日志或配置。",
-                blacklist_punishment_active,
+            raise OpenAIChannelExecutionFailure(
+                channel_name=effective_model_name,
+                user_message=f"{channel_label} 连接失败: {error_info}。请检查日志或配置。",
+                failure_kind="unexpected_error",
+                should_lock_channel=True,
+                raw_error=e,
             )
         finally:
             await http_client.aclose()

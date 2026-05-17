@@ -9,6 +9,7 @@ import logging
 import os
 import re
 from datetime import datetime
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
@@ -31,6 +32,30 @@ from src.chat.utils.custom_model_api_keys import (
 )
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ApiKeyRotationOutcome:
+    rotated: bool
+    deleted: bool
+    all_keys_exhausted: bool
+    rotation_count: int
+    should_retry: bool
+
+
+class CustomModelChannelError(Exception):
+    def __init__(
+        self,
+        message: str,
+        *,
+        failure_kind: str,
+        api_key_rotation_count: int = 0,
+        total_api_keys: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.failure_kind = failure_kind
+        self.api_key_rotation_count = api_key_rotation_count
+        self.total_api_keys = total_api_keys
 
 
 class CustomModelClient:
@@ -294,14 +319,18 @@ class CustomModelClient:
         total_keys: int,
         failure_label: str,
         reason_preview: str,
+        rotation_count: int,
         runtime_config: Optional[Dict[str, Any]] = None,
-    ) -> bool:
-        if total_keys <= 1:
-            return False
-
+    ) -> ApiKeyRotationOutcome:
         async with self._key_rotation_lock:
-            if len(self._api_keys) <= 1:
-                return False
+            if not self._api_keys:
+                return ApiKeyRotationOutcome(
+                    rotated=False,
+                    deleted=False,
+                    all_keys_exhausted=False,
+                    rotation_count=rotation_count,
+                    should_retry=False,
+                )
 
             active_index = min(
                 max(self._active_api_key_index, 0), len(self._api_keys) - 1
@@ -309,7 +338,81 @@ class CustomModelClient:
             active_key = self._api_keys[active_index]
 
             if active_key == failed_api_key and active_index == failed_index:
-                reordered_keys = list(self._api_keys)
+                source_type = str(
+                    (runtime_config or {}).get("api_key_source_type")
+                    or self._api_key_source_type
+                ).lower()
+                current_keys = list(self._api_keys)
+                next_rotation_count = rotation_count + 1
+
+                if failure_label == "403 Forbidden":
+                    updated_keys = list(current_keys)
+                    deleted_key = updated_keys.pop(active_index)
+                    next_index = min(active_index, max(len(updated_keys) - 1, 0))
+                    serialized_api_keys = self._apply_api_key_state(
+                        updated_keys,
+                        active_index=next_index,
+                    )
+                    all_keys_exhausted = len(updated_keys) == 0
+                    next_key = self.api_key or ""
+                    persist_note: Any = True
+                    if source_type == "file":
+                        file_path = str(
+                            (runtime_config or {}).get("api_key_file_path")
+                            or self._api_key_file_path
+                            or ""
+                        ).strip()
+                        try:
+                            directory = os.path.dirname(file_path)
+                            if directory:
+                                os.makedirs(directory, exist_ok=True)
+                            with open(file_path, "w", encoding="utf-8") as fp:
+                                json.dump(
+                                    {"api_keys": list(self._api_keys)},
+                                    fp,
+                                    ensure_ascii=False,
+                                    indent=2,
+                                )
+                                fp.write("\n")
+                            persist_note = f"file:{file_path}"
+                        except Exception as exc:
+                            persist_note = f"file_failed:{type(exc).__name__}"
+                            log.warning(
+                                "[Custom] Failed to persist deleted API key state to file %s: %s",
+                                file_path or "<empty>",
+                                exc,
+                                exc_info=True,
+                            )
+                    else:
+                        persist_note = self._persist_api_keys_to_env(
+                            serialized_api_keys
+                        )
+
+                    if runtime_config is not None:
+                        runtime_config["api_key"] = serialized_api_keys
+                        runtime_config["api_keys"] = list(self._api_keys)
+
+                    log.warning(
+                        "[Custom] Key ...%s hit %s, deleted this key and switched to key ...%s | active_pos=%s/%s | persisted=%s | handled_keys=%s/%s | reason=%s",
+                        self._mask_key_tail(deleted_key),
+                        failure_label,
+                        self._mask_key_tail(next_key),
+                        (next_index + 1) if self._api_keys else 0,
+                        len(self._api_keys),
+                        persist_note,
+                        next_rotation_count,
+                        total_keys,
+                        reason_preview,
+                    )
+                    return ApiKeyRotationOutcome(
+                        rotated=False,
+                        deleted=True,
+                        all_keys_exhausted=all_keys_exhausted,
+                        rotation_count=next_rotation_count,
+                        should_retry=not all_keys_exhausted,
+                    )
+
+                reordered_keys = list(current_keys)
                 failed_key = reordered_keys.pop(active_index)
                 reordered_keys.append(failed_key)
                 next_index = (
@@ -322,10 +425,6 @@ class CustomModelClient:
                 if runtime_config is not None:
                     runtime_config["api_key"] = serialized_api_keys
                     runtime_config["api_keys"] = list(self._api_keys)
-                source_type = str(
-                    (runtime_config or {}).get("api_key_source_type")
-                    or self._api_key_source_type
-                ).lower()
                 if source_type == "file":
                     file_path = str(
                         (runtime_config or {}).get("api_key_file_path")
@@ -349,29 +448,44 @@ class CustomModelClient:
                     persisted = self._persist_api_keys_to_env(serialized_api_keys)
                     persist_note = persisted
                 next_key = self.api_key or ""
+                all_keys_exhausted = next_rotation_count >= total_keys
                 log.warning(
-                    "[Custom] Key ...%s hit %s, moved it to the end and switched to key ...%s (%s/%s) | persisted=%s | reason=%s",
+                    "[Custom] Key ...%s hit %s, moved it to the end and switched to key ...%s | active_pos=%s/%s | persisted=%s | handled_keys=%s/%s | reason=%s",
                     self._mask_key_tail(failed_api_key),
                     failure_label,
                     self._mask_key_tail(next_key),
                     next_index + 1,
                     len(self._api_keys),
                     persist_note,
+                    next_rotation_count,
+                    total_keys,
                     reason_preview,
                 )
-                return True
+                return ApiKeyRotationOutcome(
+                    rotated=True,
+                    deleted=False,
+                    all_keys_exhausted=all_keys_exhausted,
+                    rotation_count=next_rotation_count,
+                    should_retry=not all_keys_exhausted,
+                )
 
             self.api_key = active_key
             if runtime_config is not None:
                 runtime_config["api_key"] = self._serialize_api_keys(self._api_keys)
                 runtime_config["api_keys"] = list(self._api_keys)
             log.info(
-                "[Custom] Key ...%s hit %s, but active key is already ...%s; will retry with the current active key.",
+                "[Custom] Key ...%s hit %s, but active key is already ...%s; rotation was not triggered.",
                 self._mask_key_tail(failed_api_key),
                 failure_label,
                 self._mask_key_tail(active_key),
             )
-            return True
+            return ApiKeyRotationOutcome(
+                rotated=False,
+                deleted=False,
+                all_keys_exhausted=False,
+                rotation_count=rotation_count,
+                should_retry=True,
+            )
 
     @classmethod
     def get_runtime_config(cls) -> Dict[str, Any]:
@@ -1832,7 +1946,12 @@ class CustomModelClient:
 
         used_streaming = False
         response: Optional[httpx.Response] = None
-        max_key_attempts = max(total_api_keys, 1)
+        initial_total_api_keys = max(total_api_keys, 1)
+        max_key_attempts = initial_total_api_keys
+        api_key_rotation_count = 0
+        api_key_source_type = str(
+            runtime_config.get("api_key_source_type") or self._api_key_source_type or ""
+        ).strip().lower() or "inline"
         loop = asyncio.get_running_loop()
 
         for attempt in range(max_key_attempts):
@@ -1885,17 +2004,39 @@ class CustomModelClient:
                             )
                         )
                         if api_key_rotation_error_label:
-                            rotated = await self._rotate_to_next_api_key(
+                            rotation_outcome = await self._rotate_to_next_api_key(
                                 failed_api_key=api_key,
                                 failed_index=api_key_index,
-                                total_keys=total_api_keys,
+                                total_keys=initial_total_api_keys,
                                 failure_label=api_key_rotation_error_label,
                                 reason_preview=combined_error_text[:1000],
+                                rotation_count=api_key_rotation_count,
                                 runtime_config=runtime_config,
                             )
+                            api_key_rotation_count = (
+                                rotation_outcome.rotation_count
+                            )
+                            if api_key_source_type == "file":
+                                if rotation_outcome.rotated or rotation_outcome.deleted:
+                                    if rotation_outcome.all_keys_exhausted:
+                                        raise CustomModelChannelError(
+                                            "custom 通道的文件 API Key 已全部失效，当前渠道不可用。",
+                                            failure_kind="custom_file_all_keys_exhausted",
+                                            api_key_rotation_count=api_key_rotation_count,
+                                            total_api_keys=initial_total_api_keys,
+                                        )
+                                    if attempt < max_key_attempts - 1:
+                                        continue
+                                raise CustomModelChannelError(
+                                    "custom 通道失败，且这次错误没有触发文件 Key 处理，当前渠道不可用。",
+                                    failure_kind="custom_file_key_handling_not_triggered",
+                                    api_key_rotation_count=api_key_rotation_count,
+                                    total_api_keys=initial_total_api_keys,
+                                )
+
                             if (
-                                rotated
-                                and total_api_keys > 1
+                                rotation_outcome.should_retry
+                                and initial_total_api_keys > 1
                                 and attempt < max_key_attempts - 1
                             ):
                                 continue
@@ -2282,5 +2423,8 @@ class CustomModelClient:
                 if selected_gateway_provider is not None
                 else None
             ),
+            "api_key_rotation_count": api_key_rotation_count,
+            "api_key_source_type": api_key_source_type,
+            "total_api_keys": initial_total_api_keys,
             "skip_custom_site_for_this_turn": False,
         }

@@ -13,6 +13,8 @@ class AIModelSettingsModal(discord.ui.Modal):
         title: str,
         current_model: str,
         current_summary_model: str,
+        current_secondary_model: str,
+        current_tertiary_model: str,
         available_models: List[str],
         on_submit_callback: Callable[[Interaction, Dict[str, Any]], Awaitable[None]],
     ):
@@ -39,11 +41,33 @@ class AIModelSettingsModal(discord.ui.Modal):
         )
         self.add_item(self.summary_model_input)
 
+        self.secondary_model_input = TextInput(
+            label="输入第2渠道模型名称",
+            placeholder="留空表示不配置第2渠道",
+            default=current_secondary_model,
+            custom_id="secondary_model_input",
+            required=False,
+        )
+        self.add_item(self.secondary_model_input)
+
+        self.tertiary_model_input = TextInput(
+            label="输入第3渠道模型名称",
+            placeholder="留空表示不配置第3渠道",
+            default=current_tertiary_model,
+            custom_id="tertiary_model_input",
+            required=False,
+        )
+        self.add_item(self.tertiary_model_input)
+
     async def on_submit(self, interaction: Interaction):
         entered_model = self.model_input.value.strip()
         entered_summary_model = self.summary_model_input.value.strip()
+        entered_secondary_model = self.secondary_model_input.value.strip()
+        entered_tertiary_model = self.tertiary_model_input.value.strip()
         settings = {
             "ai_model": entered_model,
             "summary_model": entered_summary_model,
+            "secondary_model": entered_secondary_model,
+            "tertiary_model": entered_tertiary_model,
         }
         await self.on_submit_callback(interaction, settings)

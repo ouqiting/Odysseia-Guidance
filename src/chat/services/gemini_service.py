@@ -37,7 +37,11 @@ from src.chat.features.chat_settings.services.chat_settings_service import (
 from src.chat.utils.image_utils import sanitize_image
 from src.database.services.token_usage_service import token_usage_service
 from src.database.database import AsyncSessionLocal
-from src.chat.services.openai_service import OpenAIService
+from src.chat.services.openai_fallback_service import openai_fallback_service
+from src.chat.services.openai_service import (
+    OpenAIChannelExecutionFailure,
+    OpenAIService,
+)
 
 
 log = logging.getLogger(__name__)
@@ -713,33 +717,126 @@ class GeminiService:
         # --- OpenAI 兼容专用路由（DeepSeek / Kimi） ---
         if model_name in ["deepseek-chat", "deepseek-v4-pro", "kimi-k2.5", "custom"]:
             log.info(f"检测到 {model_name} 模型，切换至 OpenAIService。")
-            result = await self.openai_service.generate_response(
-                user_id=user_id,
-                guild_id=guild_id,
-                message=message,
-                channel=channel,
-                replied_message=replied_message,
-                images=images,
-                text_attachments=text_attachments,
-                user_name=user_name,
-                channel_context=channel_context,
-                world_book_entries=world_book_entries,
-                personal_summary=personal_summary,
-                affection_status=affection_status,
-                user_profile_data=user_profile_data,
-                guild_name=guild_name,
-                location_name=location_name,
-                model_name=model_name,
-                user_id_for_settings=user_id_for_settings,
-                blacklist_punishment_active=blacklist_punishment_active,
-                override_base_url=one_time_debug_base_url,
-                videos=videos,
-                retrieval_query_text=retrieval_query_text,
-                retrieval_query_embedding=retrieval_query_embedding,
-                rag_timeout_fallback=rag_timeout_fallback,
+            fallback_state = await openai_fallback_service.get_daily_state(model_name)
+            if not fallback_state.order:
+                result = await self.openai_service.generate_response(
+                    user_id=user_id,
+                    guild_id=guild_id,
+                    message=message,
+                    channel=channel,
+                    replied_message=replied_message,
+                    images=images,
+                    text_attachments=text_attachments,
+                    user_name=user_name,
+                    channel_context=channel_context,
+                    world_book_entries=world_book_entries,
+                    personal_summary=personal_summary,
+                    affection_status=affection_status,
+                    user_profile_data=user_profile_data,
+                    guild_name=guild_name,
+                    location_name=location_name,
+                    model_name=model_name,
+                    user_id_for_settings=user_id_for_settings,
+                    blacklist_punishment_active=blacklist_punishment_active,
+                    override_base_url=one_time_debug_base_url,
+                    videos=videos,
+                    retrieval_query_text=retrieval_query_text,
+                    retrieval_query_embedding=retrieval_query_embedding,
+                    rag_timeout_fallback=rag_timeout_fallback,
+                )
+                self.last_called_tools = list(self.openai_service.last_called_tools)
+                return result
+
+            log.info(
+                "[OpenAI Fallback] 当天渠道顺序=%s | 已锁定=%s | 本次可用=%s",
+                fallback_state.order,
+                fallback_state.failed_channels,
+                fallback_state.active_order,
             )
+            last_failure: Optional[OpenAIChannelExecutionFailure] = None
+
+            for fallback_model in fallback_state.active_order:
+                log.info(
+                    "[OpenAI Fallback] 本次尝试渠道=%s | 主渠道=%s",
+                    fallback_model,
+                    model_name,
+                )
+                try:
+                    channel_result = await self.openai_service.execute_channel_response(
+                        user_id=user_id,
+                        guild_id=guild_id,
+                        message=message,
+                        channel=channel,
+                        replied_message=replied_message,
+                        images=images,
+                        text_attachments=text_attachments,
+                        user_name=user_name,
+                        channel_context=channel_context,
+                        world_book_entries=world_book_entries,
+                        personal_summary=personal_summary,
+                        affection_status=affection_status,
+                        user_profile_data=user_profile_data,
+                        guild_name=guild_name,
+                        location_name=location_name,
+                        model_name=fallback_model,
+                        user_id_for_settings=user_id_for_settings,
+                        override_base_url=one_time_debug_base_url,
+                        videos=videos,
+                        retrieval_query_text=retrieval_query_text,
+                        retrieval_query_embedding=retrieval_query_embedding,
+                        rag_timeout_fallback=rag_timeout_fallback,
+                    )
+                    self.last_called_tools = list(self.openai_service.last_called_tools)
+                    log.info(
+                        "[OpenAI Fallback] 渠道成功 | order=%s | selected=%s | used_model=%s",
+                        fallback_state.order,
+                        fallback_model,
+                        channel_result.used_model_name,
+                    )
+                    return self.openai_service._apply_blacklist_notice(
+                        channel_result.response_text,
+                        blacklist_punishment_active,
+                    )
+                except OpenAIChannelExecutionFailure as exc:
+                    last_failure = exc
+                    locked_to_next_day = False
+                    if exc.should_lock_channel:
+                        updated_state = await openai_fallback_service.mark_channel_failed(
+                            primary_model=model_name,
+                            channel_name=fallback_model,
+                        )
+                        locked_to_next_day = fallback_model in updated_state.failed_channels
+
+                    custom_rotation_info = ""
+                    raw_error = getattr(exc, "raw_error", None)
+                    rotation_count = getattr(raw_error, "api_key_rotation_count", 0)
+                    total_api_keys = getattr(raw_error, "total_api_keys", 0)
+                    if rotation_count or total_api_keys:
+                        custom_rotation_info = (
+                            f" | custom_file_key_rotations={rotation_count}/{total_api_keys}"
+                        )
+
+                    log.warning(
+                        "[OpenAI Fallback] 渠道失败 | order=%s | selected=%s | failure_kind=%s | lock_until_next_day=%s | message=%s%s",
+                        fallback_state.order,
+                        fallback_model,
+                        exc.failure_kind,
+                        locked_to_next_day,
+                        exc.user_message,
+                        custom_rotation_info,
+                    )
+
             self.last_called_tools = list(self.openai_service.last_called_tools)
-            return result
+            if last_failure is not None:
+                return self.openai_service._apply_blacklist_notice(
+                    last_failure.user_message,
+                    blacklist_punishment_active,
+                )
+
+            return self.openai_service._apply_blacklist_notice(
+                "当前已无可用 OpenAI 兼容渠道，失败渠道会在明天 0 点后自动重置。",
+                blacklist_punishment_active,
+            )
 
         # 如果选择了自定义模型，则尝试使用它，并准备好回退
         if model_name and model_name in app_config.CUSTOM_GEMINI_ENDPOINTS:

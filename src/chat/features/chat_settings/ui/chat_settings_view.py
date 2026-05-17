@@ -536,6 +536,10 @@ class ChatSettingsView(View):
         """打开AI模型设置模态框。"""
         current_model = await self.service.get_current_ai_model()
         current_summary_model = await self.service.get_current_summary_model()
+        (
+            current_secondary_model,
+            current_tertiary_model,
+        ) = await self.service.get_openai_fallback_models()
         available_models = self.service.get_available_ai_models()
 
         async def modal_callback(
@@ -543,6 +547,8 @@ class ChatSettingsView(View):
         ):
             new_model = (settings.get("ai_model") or "").strip()
             new_summary_model = (settings.get("summary_model") or "").strip()
+            new_secondary_model = (settings.get("secondary_model") or "").strip()
+            new_tertiary_model = (settings.get("tertiary_model") or "").strip()
             if not new_model:
                 await modal_interaction.response.send_message(
                     "❌ 没有选择任何模型。", ephemeral=True
@@ -560,8 +566,48 @@ class ChatSettingsView(View):
                 if new_summary_model.lower() == "custom"
                 else new_summary_model
             )
+
+            try:
+                normalized_secondary_model = (
+                    self.service.validate_openai_fallback_model(new_secondary_model)
+                )
+                normalized_tertiary_model = (
+                    self.service.validate_openai_fallback_model(new_tertiary_model)
+                )
+            except ValueError as exc:
+                await modal_interaction.response.send_message(
+                    f"❌ {exc}",
+                    ephemeral=True,
+                )
+                return
+
+            deduped_fallback_models = []
+            for candidate in (
+                normalized_model,
+                normalized_secondary_model,
+                normalized_tertiary_model,
+            ):
+                if not candidate or candidate in deduped_fallback_models:
+                    continue
+                deduped_fallback_models.append(candidate)
+
+            deduped_secondary_model = (
+                deduped_fallback_models[1]
+                if len(deduped_fallback_models) > 1
+                else ""
+            )
+            deduped_tertiary_model = (
+                deduped_fallback_models[2]
+                if len(deduped_fallback_models) > 2
+                else ""
+            )
+
             summary_persisted = await self.service.set_summary_model(
                 normalized_summary_model
+            )
+            await self.service.set_openai_fallback_models(
+                secondary_model=deduped_secondary_model,
+                tertiary_model=deduped_tertiary_model,
             )
             summary_persist_note = (
                 "✅ 已写入 `.env` 并立即生效"
@@ -581,6 +627,8 @@ class ChatSettingsView(View):
                         "✅ 已切换到 **custom** 聊天模型，并同步更新记忆摘要模型。\n"
                         f"- 聊天模型: `custom`\n"
                         f"- 记忆摘要模型: `{normalized_summary_model}`\n"
+                        f"- 第2渠道: `{deduped_secondary_model or '未配置'}`\n"
+                        f"- 第3渠道: `{deduped_tertiary_model or '未配置'}`\n"
                         f"- 摘要模型持久化: {summary_persist_note}\n"
                         "可以配置 `CUSTOM_MODEL_URL` / `CUSTOM_MODEL_API_KEY` / `CUSTOM_MODEL_NAME`。\n"
                         "`CUSTOM_MODEL_API_KEY` 支持直接填写 key，或填写 `/data/*.json` 文件路径（会自动映射到 `/app/data`）。\n"
@@ -597,6 +645,8 @@ class ChatSettingsView(View):
                     "✅ 已成功切换模型。\n"
                     f"- 聊天模型: `{normalized_model}`\n"
                     f"- 记忆摘要模型: `{normalized_summary_model}`\n"
+                    f"- 第2渠道: `{deduped_secondary_model or '未配置'}`\n"
+                    f"- 第3渠道: `{deduped_tertiary_model or '未配置'}`\n"
                     f"- 摘要模型持久化: {summary_persist_note}"
                 ),
                 ephemeral=True,
@@ -606,6 +656,8 @@ class ChatSettingsView(View):
             title="更换全局AI模型",
             current_model=current_model,
             current_summary_model=current_summary_model,
+            current_secondary_model=current_secondary_model,
+            current_tertiary_model=current_tertiary_model,
             available_models=available_models,
             on_submit_callback=modal_callback,
         )
