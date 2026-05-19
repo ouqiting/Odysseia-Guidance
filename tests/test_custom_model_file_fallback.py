@@ -35,16 +35,11 @@ def _build_runtime_config() -> dict:
 
 
 @pytest.mark.asyncio
-async def test_custom_file_keys_fail_after_all_rotations(monkeypatch: pytest.MonkeyPatch):
+async def test_custom_file_keys_delete_failed_key_on_403(tmp_path):
     client = CustomModelClient()
     runtime_config = _build_runtime_config()
-    persisted_orders = []
-
-    monkeypatch.setattr(
-        custom_model_module,
-        "persist_custom_model_api_keys_to_file",
-        lambda file_path, api_keys: persisted_orders.append(list(api_keys)),
-    )
+    file_path = tmp_path / "CUSTOM_MODEL_API_KEY.json"
+    runtime_config["api_key_file_path"] = str(file_path)
 
     def forbidden_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -55,6 +50,91 @@ async def test_custom_file_keys_fail_after_all_rotations(monkeypatch: pytest.Mon
 
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(forbidden_handler)
+    ) as http_client:
+        with pytest.raises(CustomModelChannelError) as exc_info:
+            await client.send(
+                http_client=http_client,
+                payload={"model": "custom-test-model", "messages": []},
+                runtime_config=runtime_config,
+            )
+
+    exc = exc_info.value
+    assert exc.failure_kind == "custom_file_all_keys_exhausted"
+    assert exc.api_key_rotation_count == 2
+    assert exc.total_api_keys == 2
+    persisted_payload = json.loads(file_path.read_text(encoding="utf-8"))
+    assert persisted_payload == {"api_keys": []}
+
+
+@pytest.mark.asyncio
+async def test_custom_file_keys_move_failed_key_to_end_on_402(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client = CustomModelClient()
+    runtime_config = _build_runtime_config()
+    persisted_orders = []
+
+    monkeypatch.setattr(
+        custom_model_module,
+        "persist_custom_model_api_keys_to_file",
+        lambda file_path, api_keys: persisted_orders.append(list(api_keys)),
+    )
+
+    def payment_required_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            402,
+            json={"error": {"message": "payment required"}},
+            request=request,
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(payment_required_handler)
+    ) as http_client:
+        with pytest.raises(CustomModelChannelError) as exc_info:
+            await client.send(
+                http_client=http_client,
+                payload={"model": "custom-test-model", "messages": []},
+                runtime_config=runtime_config,
+            )
+
+    exc = exc_info.value
+    assert exc.failure_kind == "custom_file_all_keys_exhausted"
+    assert exc.api_key_rotation_count == 2
+    assert exc.total_api_keys == 2
+    assert persisted_orders == [
+        ["key-beta", "key-alpha"],
+        ["key-alpha", "key-beta"],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_custom_file_keys_move_failed_key_to_end_on_insufficient_funds_text(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    client = CustomModelClient()
+    runtime_config = _build_runtime_config()
+    persisted_orders = []
+
+    monkeypatch.setattr(
+        custom_model_module,
+        "persist_custom_model_api_keys_to_file",
+        lambda file_path, api_keys: persisted_orders.append(list(api_keys)),
+    )
+
+    def insufficient_funds_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "message": "Insufficient funds. Please add credits to your account to continue using AI services.",
+                    "type": "insufficient_funds",
+                }
+            },
+            request=request,
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(insufficient_funds_handler)
     ) as http_client:
         with pytest.raises(CustomModelChannelError) as exc_info:
             await client.send(

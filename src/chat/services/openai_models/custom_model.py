@@ -239,7 +239,11 @@ class CustomModelClient:
         status_code: int, combined_error_text: str
     ) -> str:
         lowered_error_text = str(combined_error_text or "").lower()
-        if status_code == 402 or "402 payment required" in lowered_error_text:
+        if (
+            status_code == 402
+            or "402 payment required" in lowered_error_text
+            or "insufficient funds" in lowered_error_text
+        ):
             return "402 Payment Required"
         if status_code == 403 or "403 forbidden" in lowered_error_text:
             return "403 Forbidden"

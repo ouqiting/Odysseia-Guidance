@@ -91,6 +91,12 @@ async def test_main_reply_uses_next_channel_after_same_day_failure(
         "execute_channel_response",
         execute_channel_response,
     )
+    notify_alert = AsyncMock()
+    monkeypatch.setattr(
+        gemini_service.openai_service.kimi_model_client,
+        "notify_alert",
+        notify_alert,
+    )
 
     first_result = await gemini_service.generate_response(
         user_id=1,
@@ -120,3 +126,6 @@ async def test_main_reply_uses_next_channel_after_same_day_failure(
         primary_model="custom",
         channel_name="custom",
     )
+    notify_alert.assert_awaited_once()
+    assert "失败渠道: custom" in notify_alert.await_args.args[0]
+    assert "下一渠道: deepseek-chat" in notify_alert.await_args.args[0]

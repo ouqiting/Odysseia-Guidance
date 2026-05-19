@@ -422,6 +422,32 @@ class GeminiService:
         # 关键：同时将 bot 实例注入到 ToolService 中
         self.tool_service.bot = bot
         self.last_called_tools: List[str] = []
+
+    async def _notify_openai_fallback_switch(
+        self,
+        *,
+        primary_model: Optional[str],
+        failed_model: str,
+        next_model: str,
+        failure: OpenAIChannelExecutionFailure,
+    ) -> None:
+        raw_error = getattr(failure, "raw_error", None)
+        rotation_count = getattr(raw_error, "api_key_rotation_count", 0)
+        total_api_keys = getattr(raw_error, "total_api_keys", 0)
+        rotation_note = ""
+        if rotation_count or total_api_keys:
+            rotation_note = f"\n- 本次请求已处理 key: {rotation_count}/{total_api_keys}"
+
+        content = (
+            "OpenAI 兼容渠道已发生回退切换。\n"
+            f"- 主渠道: {primary_model or 'N/A'}\n"
+            f"- 失败渠道: {failed_model}\n"
+            f"- 下一渠道: {next_model}\n"
+            f"- 失败类型: {failure.failure_kind}\n"
+            f"- 错误信息: {failure.user_message}"
+            f"{rotation_note}"
+        )
+        await self.openai_service.kimi_model_client.notify_alert(content)
         log.info("Discord Bot 实例已成功注入 ToolService。")
 
     def arm_one_time_debug_base_url(self, base_url: str) -> None:
@@ -755,7 +781,8 @@ class GeminiService:
             )
             last_failure: Optional[OpenAIChannelExecutionFailure] = None
 
-            for fallback_model in fallback_state.active_order:
+            active_order = list(fallback_state.active_order)
+            for index, fallback_model in enumerate(active_order):
                 log.info(
                     "[OpenAI Fallback] 本次尝试渠道=%s | 主渠道=%s",
                     fallback_model,
@@ -825,6 +852,14 @@ class GeminiService:
                         exc.user_message,
                         custom_rotation_info,
                     )
+                    if index + 1 < len(active_order):
+                        next_model = active_order[index + 1]
+                        await self._notify_openai_fallback_switch(
+                            primary_model=model_name,
+                            failed_model=fallback_model,
+                            next_model=next_model,
+                            failure=exc,
+                        )
 
             self.last_called_tools = list(self.openai_service.last_called_tools)
             if last_failure is not None:
