@@ -1188,12 +1188,19 @@ class OpenAIService:
         for turn in final_conversation:
             gemini_role = turn.get("role")
 
-            # Custom(开启识图)：沿用 OCR 拼接为纯文本
-            if is_custom_model and custom_vision_enabled:
-                content = await self.custom_model_client.build_turn_content(
-                    turn.get("parts", []) or [],
-                    enable_vision=custom_vision_enabled,
-                )
+            # DeepSeek / Custom(开启识图)：沿用 OCR 拼接为纯文本
+            if is_deepseek_model or (
+                is_custom_model and custom_vision_enabled
+            ):
+                if is_deepseek_model:
+                    content = await self.deepseek_model_client.build_turn_content(
+                        turn.get("parts", []) or []
+                    )
+                else:
+                    content = await self.custom_model_client.build_turn_content(
+                        turn.get("parts", []) or [],
+                        enable_vision=custom_vision_enabled,
+                    )
 
                 if not content:
                     continue
@@ -1208,15 +1215,10 @@ class OpenAIService:
                         openai_messages.append({"role": "user", "content": content})
                 continue
 
-            # Kimi / DeepSeek / Custom：直接发送多模态 content block（图片直传，不走 Moonshot OCR）
-            if is_deepseek_model:
-                content_blocks = await self.deepseek_model_client.build_turn_content(
-                    turn.get("parts", []) or []
-                )
-            else:
-                content_blocks = self.kimi_model_client.build_turn_content(
-                    turn.get("parts", []) or []
-                )
+            # Kimi / Custom：直接发送多模态 content block（图片直传，不走 Moonshot OCR）
+            content_blocks = self.kimi_model_client.build_turn_content(
+                turn.get("parts", []) or []
+            )
             if not content_blocks:
                 continue
 

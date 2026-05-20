@@ -827,12 +827,23 @@ class GeminiService:
                 except OpenAIChannelExecutionFailure as exc:
                     last_failure = exc
                     locked_to_next_day = False
-                    if exc.should_lock_channel:
-                        updated_state = await openai_fallback_service.mark_channel_failed(
-                            primary_model=model_name,
-                            channel_name=fallback_model,
+                    try:
+                        if exc.should_lock_channel:
+                            updated_state = await openai_fallback_service.mark_channel_failed(
+                                primary_model=model_name,
+                                channel_name=fallback_model,
+                            )
+                            locked_to_next_day = (
+                                fallback_model in updated_state.failed_channels
+                            )
+                    except Exception as state_error:
+                        log.error(
+                            "[OpenAI Fallback] 记录失败渠道状态时出错 | primary=%s | failed=%s | error=%s",
+                            model_name,
+                            fallback_model,
+                            state_error,
+                            exc_info=True,
                         )
-                        locked_to_next_day = fallback_model in updated_state.failed_channels
 
                     custom_rotation_info = ""
                     raw_error = getattr(exc, "raw_error", None)
@@ -854,12 +865,81 @@ class GeminiService:
                     )
                     if index + 1 < len(active_order):
                         next_model = active_order[index + 1]
-                        await self._notify_openai_fallback_switch(
+                        try:
+                            await self._notify_openai_fallback_switch(
+                                primary_model=model_name,
+                                failed_model=fallback_model,
+                                next_model=next_model,
+                                failure=exc,
+                            )
+                        except Exception as notify_error:
+                            log.error(
+                                "[OpenAI Fallback] 发送渠道切换通知失败 | primary=%s | failed=%s | next=%s | error=%s",
+                                model_name,
+                                fallback_model,
+                                next_model,
+                                notify_error,
+                                exc_info=True,
+                            )
+                except Exception as unexpected_exc:
+                    log.error(
+                        "[OpenAI Fallback] 渠道执行抛出未包装异常，将继续尝试下一渠道 | primary=%s | failed=%s | error=%s",
+                        model_name,
+                        fallback_model,
+                        unexpected_exc,
+                        exc_info=True,
+                    )
+                    last_failure = OpenAIChannelExecutionFailure(
+                        channel_name=fallback_model,
+                        user_message=(
+                            f"{fallback_model} 渠道执行时发生未预期错误："
+                            f"{type(unexpected_exc).__name__}: {unexpected_exc}"
+                        ),
+                        failure_kind="unexpected_fallback_exception",
+                        should_lock_channel=True,
+                        raw_error=unexpected_exc,
+                    )
+                    try:
+                        updated_state = await openai_fallback_service.mark_channel_failed(
                             primary_model=model_name,
-                            failed_model=fallback_model,
-                            next_model=next_model,
-                            failure=exc,
+                            channel_name=fallback_model,
                         )
+                        locked_to_next_day = (
+                            fallback_model in updated_state.failed_channels
+                        )
+                    except Exception as state_error:
+                        locked_to_next_day = False
+                        log.error(
+                            "[OpenAI Fallback] 记录未包装异常渠道状态时出错 | primary=%s | failed=%s | error=%s",
+                            model_name,
+                            fallback_model,
+                            state_error,
+                            exc_info=True,
+                        )
+                    log.warning(
+                        "[OpenAI Fallback] 未包装异常已按渠道失败处理 | order=%s | selected=%s | lock_until_next_day=%s",
+                        fallback_state.order,
+                        fallback_model,
+                        locked_to_next_day,
+                    )
+                    if index + 1 < len(active_order):
+                        next_model = active_order[index + 1]
+                        try:
+                            await self._notify_openai_fallback_switch(
+                                primary_model=model_name,
+                                failed_model=fallback_model,
+                                next_model=next_model,
+                                failure=last_failure,
+                            )
+                        except Exception as notify_error:
+                            log.error(
+                                "[OpenAI Fallback] 发送未包装异常渠道切换通知失败 | primary=%s | failed=%s | next=%s | error=%s",
+                                model_name,
+                                fallback_model,
+                                next_model,
+                                notify_error,
+                                exc_info=True,
+                            )
 
             self.last_called_tools = list(self.openai_service.last_called_tools)
             if last_failure is not None:

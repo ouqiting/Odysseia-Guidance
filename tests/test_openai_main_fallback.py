@@ -129,3 +129,77 @@ async def test_main_reply_uses_next_channel_after_same_day_failure(
     notify_alert.assert_awaited_once()
     assert "失败渠道: custom" in notify_alert.await_args.args[0]
     assert "下一渠道: deepseek-chat" in notify_alert.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_main_reply_continues_to_third_channel_after_unexpected_exception(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    if gemini_service is None:
+        pytest.skip("optional database/vector dependencies are not installed.")
+
+    fallback_state = OpenAIFallbackState(
+        date="2026-05-20",
+        order=["custom", "kimi-k2.5", "deepseek-chat"],
+        failed_channels=[],
+    )
+
+    async def _get_daily_state(primary_model: str):
+        return fallback_state
+
+    mark_channel_failed = AsyncMock(return_value=fallback_state)
+    execute_channel_response = AsyncMock(
+        side_effect=[
+            OpenAIChannelExecutionFailure(
+                channel_name="custom",
+                user_message="custom failed",
+                failure_kind="request_error",
+                should_lock_channel=True,
+            ),
+            RuntimeError("kimi exploded unexpectedly"),
+            OpenAIChannelExecutionResult(
+                channel_name="deepseek-chat",
+                response_text="third channel ok",
+                used_model_name="deepseek-chat",
+            ),
+        ]
+    )
+
+    monkeypatch.setattr(
+        "src.chat.services.gemini_service.openai_fallback_service.get_daily_state",
+        _get_daily_state,
+    )
+    monkeypatch.setattr(
+        "src.chat.services.gemini_service.openai_fallback_service.mark_channel_failed",
+        mark_channel_failed,
+    )
+    monkeypatch.setattr(
+        gemini_service,
+        "consume_one_time_debug_base_url",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        gemini_service.openai_service,
+        "execute_channel_response",
+        execute_channel_response,
+    )
+    notify_alert = AsyncMock()
+    monkeypatch.setattr(
+        gemini_service.openai_service.kimi_model_client,
+        "notify_alert",
+        notify_alert,
+    )
+
+    result = await gemini_service.generate_response(
+        user_id=1,
+        guild_id=1,
+        message="hello",
+        channel=None,
+        model_name="custom",
+    )
+
+    assert result == "third channel ok"
+    assert [
+        call.kwargs["model_name"] for call in execute_channel_response.await_args_list
+    ] == ["custom", "kimi-k2.5", "deepseek-chat"]
+    assert mark_channel_failed.await_count == 2
