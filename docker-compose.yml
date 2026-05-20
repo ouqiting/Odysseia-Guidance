@@ -5,7 +5,7 @@ x-app-base: &app_base
     - RUNNING_IN_DOCKER=true
     - DB_HOST=db
     - DB_PORT=5432
-  image: ${APP_IMAGE:-your-dockerhub-username/odysseia-guidance:latest}
+  image: ${APP_IMAGE:-ouqiting/odysseia-guidance:latest}
   pull_policy: always
   networks:
     - bot_network

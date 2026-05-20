@@ -133,10 +133,10 @@ nano .env
 除了业务配置外，请额外确认这一项：
 
 ```env
-APP_IMAGE="docker.io/你的-dockerhub-用户名/odysseia-guidance:latest"
+APP_IMAGE="docker.io/ouqiting/odysseia-guidance:latest"
 ```
 
-如果你发布的是官方镜像，部署者这里就填你的镜像地址；如果是部署某个特定版本，也可以改成 `sha-xxxxxxx` 或分支标签。
+默认可以直接使用 `docker.io/ouqiting/odysseia-guidance:latest`；如果你想切到别的镜像、分支标签或某个固定版本，再自行改 `APP_IMAGE` 即可。
 
 **必需配置项**:
 ```env
