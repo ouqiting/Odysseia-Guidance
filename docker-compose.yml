@@ -5,12 +5,8 @@ x-app-base: &app_base
     - RUNNING_IN_DOCKER=true
     - DB_HOST=db
     - DB_PORT=5432
-  build:
-    context: .
-    dockerfile: .devcontainer/Dockerfile
-  image: odysseia-guidance-app:latest
-  volumes:
-    - .:/app
+  image: ${APP_IMAGE:-your-dockerhub-username/odysseia-guidance:latest}
+  pull_policy: always
   networks:
     - bot_network
 
@@ -28,7 +24,7 @@ services:
       DB_PORT: 5432
       WEBUI_LOG_SERVER_URL: "http://host.docker.internal:${CONFIG_WEB_PORT:-8080}/api/log"
     volumes:
-      - .:/app
+      - ./.env:/app/.env:ro
       - ./data:/app/data
       - ${BACKUP_OUTPUT_DIR:-./src/backup}:/backup-output
       - /var/run/docker.sock:/var/run/docker.sock
@@ -43,6 +39,8 @@ services:
   db_migrate:
     <<: *app_base
     restart: "no"
+    volumes:
+      - ./.env:/app/.env:ro
     command: alembic upgrade head
     depends_on:
       db:
@@ -55,7 +53,7 @@ services:
     ports:
       - "${CONFIG_WEB_PORT:-8080}:80"
     volumes:
-      - .:/app
+      - ./.env:/app/.env:ro
       - /var/run/docker.sock:/var/run/docker.sock
 
     command: gunicorn --chdir ./web -k uvicorn.workers.UvicornWorker -w 1 --bind 0.0.0.0:80 "web_main:web_app"

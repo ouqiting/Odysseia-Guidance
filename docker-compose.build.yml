@@ -1,0 +1,15 @@
+services:
+  bot_app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+  db_migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+  config_web:
+    build:
+      context: .
+      dockerfile: Dockerfile

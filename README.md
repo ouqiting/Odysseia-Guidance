@@ -76,16 +76,40 @@ Odysseia 是一个为 Discord 社区"类脑"量身打造的、功能丰富的AI�
 
 ## 部署指南
 
-| 部署方式                  | 适用场景             | 优点                   |
-| ------------------------- | -------------------- | ---------------------- |
-| Docker Compose (本地构建) | 开发调试、自定义修改 | 使用最新代码，方便调试 |
+| 部署方式 | 适用场景 | 优点 |
+| --- | --- | --- |
+| Docker Compose（直接拉镜像） | 生产部署、普通用户快速安装 | 不需要本地构建，启动更快 |
+| Docker Compose（本地手动构建） | 开发调试、自定义修改 | 可基于本地源码构建 |
 
+### 先配置 GitHub Actions 自动推镜像
+
+如果你希望每次提交代码后，GitHub 自动构建并推送 Docker 镜像，请先做下面几步：
+
+**1. 在 Docker Hub 创建仓库**
+- 仓库名建议使用 `odysseia-guidance`
+
+**2. 在 GitHub 仓库中配置 Secrets**
+- 进入 `Settings -> Secrets and variables -> Actions`
+- 新建 `DOCKERHUB_USERNAME`
+- 新建 `DOCKERHUB_TOKEN`
+
+`DOCKERHUB_TOKEN` 建议使用 Docker Hub 的 Access Token，不要直接使用密码。
+
+**3. 提交代码后会自动发生什么**
+- 工作流文件：`.github/workflows/docker-publish.yml`
+- 触发时机：每次 `push`，以及手动 `workflow_dispatch`
+- 推送标签：
+  - 默认分支推送 `latest`
+  - 分支推送 `<branch-name>`
+  - 每次提交额外推送 `sha-<short-sha>`
+
+这样别人部署时，既可以直接拉 `latest`，也可以锁定某个分支标签或某次提交标签。
 
 ---
 
-### Docker Compose (本地构建) - 推荐
+### Docker Compose（直接拉镜像）
 
-适合开发者，使用本地源代码构建镜像，确保使用最新代码。
+适合大多数部署者，不需要本地构建。
 
 #### 前置要求
 - Docker 和 Docker Compose
@@ -93,15 +117,6 @@ Odysseia 是一个为 Discord 社区"类脑"量身打造的、功能丰富的AI�
 - Google Gemini API 密钥（或自定义端点）
 
 #### 部署步骤
-
-**方式 A：一键配置（推荐）**
-
-```bash
-# 克隆项目
-git clone [仓库URL]
-cd Odysseia-Guidance
-
-**方式 B：手动配置**
 
 **1. 克隆项目**
 ```bash
@@ -114,6 +129,14 @@ cd Odysseia-Guidance
 cp .env.example .env
 nano .env
 ```
+
+除了业务配置外，请额外确认这一项：
+
+```env
+APP_IMAGE="docker.io/你的-dockerhub-用户名/odysseia-guidance:latest"
+```
+
+如果你发布的是官方镜像，部署者这里就填你的镜像地址；如果是部署某个特定版本，也可以改成 `sha-xxxxxxx` 或分支标签。
 
 **必需配置项**:
 ```env
@@ -182,10 +205,10 @@ DISABLED_TOOLS="get_yearly_summary"
 FORUM_SEARCH_CHANNEL_IDS="YOUR_FORUM_CHANNEL_ID_1,YOUR_FORUM_CHANNEL_ID_2"
 ```
 
-**3. 构建并启动**
+**3. 拉取并启动**
 ```bash
-# 构建镜像
-docker compose build
+# 拉取最新镜像
+docker compose pull
 
 # 启动所有服务
 docker compose up -d
@@ -194,7 +217,7 @@ docker compose up -d
 docker compose ps
 ```
 
-说明：当前镜像会包含项目源码，便于首次部署时直接运行；同时 Docker Compose 也会在本地运行时把项目目录挂载到容器内，所以日常代码改动在当前机器上通常不需要重新 build。只有在 `requirements.txt`、Dockerfile 或需要重新打包镜像发布时，才建议重新构建镜像。
+说明：默认 `docker-compose.yml` 会直接使用 `APP_IMAGE` 指定的镜像，不需要挂载整份源码仓库。
 
 **4. 初始化数据库**
 ```bash
@@ -214,17 +237,45 @@ docker compose down
 # 重启服务
 docker compose restart bot_app
 
-# 代码更新后直接启动/刷新容器
-docker compose up -d
-
-# 只有依赖或 Dockerfile 变化时才重新构建
-docker compose build && docker compose up -d
+# 更新到最新镜像并重建容器
+docker compose pull && docker compose up -d
 
 # 查看服务状态
 docker compose ps
 ```
 
+---
 
+### Docker Compose（本地手动构建）
+
+适合你自己改了代码，或者部署者希望完全基于本地源码构建。
+
+这个仓库现在提供了两个 compose 文件：
+- `docker-compose.yml`：默认走拉镜像部署
+- `docker-compose.build.yml`：覆盖为本地构建模式
+
+**构建并启动**
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml build
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d
+```
+
+也可以一步完成：
+```bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+```
+
+**本地构建模式常用命令**
+```bash
+# 重新构建并启动
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+
+# 查看日志
+docker compose -f docker-compose.yml -f docker-compose.build.yml logs -f bot_app
+
+# 查看服务状态
+docker compose -f docker-compose.yml -f docker-compose.build.yml ps
+```
 
 ---
 

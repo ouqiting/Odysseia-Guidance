@@ -2,6 +2,7 @@
 # excluding local databases, caches, docs, and other non-runtime assets.
 **
 !.dockerignore
+!Dockerfile
 !.devcontainer/
 !.devcontainer/Dockerfile
 !requirements.txt
