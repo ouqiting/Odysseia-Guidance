@@ -14,9 +14,9 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from PIL import Image
-from dotenv import set_key
 
 from src import config
+from src.runtime_env import persist_env_updates
 from src.chat.services.vercel_gateway_provider_selector import (
     VercelGatewayProviderSelectorService,
     ProviderSelection,
@@ -216,11 +216,9 @@ class CustomModelClient:
 
         env_path = cls._get_env_path()
         try:
-            os.makedirs(os.path.dirname(env_path), exist_ok=True)
-            set_key(
+            persist_env_updates(
                 env_path,
-                cls._PRIMARY_API_KEY_ENV_NAME,
-                serialized_api_keys,
+                {cls._PRIMARY_API_KEY_ENV_NAME: serialized_api_keys},
                 quote_mode="always",
                 encoding="utf-8",
             )

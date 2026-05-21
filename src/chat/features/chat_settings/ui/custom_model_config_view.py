@@ -7,9 +7,10 @@ from typing import Any, Dict, Optional, Tuple
 
 from discord import ButtonStyle, Interaction, SelectOption
 from discord.ui import Button, View
-from dotenv import load_dotenv, set_key
+from dotenv import load_dotenv
 
 from src import config
+from src.runtime_env import persist_env_updates
 from src.chat.features.chat_settings.services.chat_settings_service import (
     ChatSettingsService,
 )
@@ -260,39 +261,15 @@ class CustomModelConfigRuntime:
     def _persist_custom_model_env(cls, settings: CustomModelSettings) -> bool:
         env_path = cls._get_env_path()
         try:
-            os.makedirs(os.path.dirname(env_path), exist_ok=True)
-            set_key(
+            persist_env_updates(
                 env_path,
-                "CUSTOM_MODEL_URL",
-                settings.custom_model_url,
-                quote_mode="always",
-                encoding="utf-8",
-            )
-            set_key(
-                env_path,
-                "CUSTOM_MODEL_API_KEY",
-                settings.custom_model_api_key,
-                quote_mode="always",
-                encoding="utf-8",
-            )
-            set_key(
-                env_path,
-                "CUSTOM_MODEL_NAME",
-                settings.custom_model_name,
-                quote_mode="always",
-                encoding="utf-8",
-            )
-            set_key(
-                env_path,
-                "CUSTOM_MODEL_ENABLE_VISION",
-                settings.custom_model_enable_vision,
-                quote_mode="always",
-                encoding="utf-8",
-            )
-            set_key(
-                env_path,
-                "CUSTOM_MODEL_ENABLE_VIDEO_INPUT",
-                settings.custom_model_enable_video_input,
+                {
+                    "CUSTOM_MODEL_URL": settings.custom_model_url,
+                    "CUSTOM_MODEL_API_KEY": settings.custom_model_api_key,
+                    "CUSTOM_MODEL_NAME": settings.custom_model_name,
+                    "CUSTOM_MODEL_ENABLE_VISION": settings.custom_model_enable_vision,
+                    "CUSTOM_MODEL_ENABLE_VIDEO_INPUT": settings.custom_model_enable_video_input,
+                },
                 quote_mode="always",
                 encoding="utf-8",
             )

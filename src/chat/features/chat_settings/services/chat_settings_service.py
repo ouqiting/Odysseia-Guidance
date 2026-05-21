@@ -2,11 +2,12 @@ import discord
 import logging
 import os
 from typing import Optional, Dict, Any, List, Tuple
-from dotenv import load_dotenv, set_key
+from dotenv import load_dotenv
 from src.chat.utils.database import chat_db_manager
 from src.chat.services.event_service import event_service
 from src.chat.config import chat_config as app_config
 from src import config
+from src.runtime_env import persist_env_updates
 from src.chat.services.openai_fallback_service import (
     OPENAI_FALLBACK_SECONDARY_MODEL_KEY,
     OPENAI_FALLBACK_TERTIARY_MODEL_KEY,
@@ -384,11 +385,9 @@ class ChatSettingsService:
 
         env_path = self._get_env_path()
         try:
-            os.makedirs(os.path.dirname(env_path), exist_ok=True)
-            set_key(
+            persist_env_updates(
                 env_path,
-                "SUMMARY_MODEL",
-                normalized_model,
+                {"SUMMARY_MODEL": normalized_model},
                 quote_mode="always",
                 encoding="utf-8",
             )
