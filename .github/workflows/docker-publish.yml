@@ -13,6 +13,8 @@ env:
 jobs:
   docker:
     runs-on: ubuntu-latest
+    outputs:
+      started_at: ${{ steps.timing.outputs.started_at }}
 
     steps:
       - name: Checkout repository
@@ -64,14 +66,18 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  notify:
+    runs-on: ubuntu-latest
+    needs: docker
+    if: ${{ always() }}
+
+    steps:
       - name: Notify Discord webhook
-        if: ${{ always() }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          JOB_STATUS: ${{ job.status }}
-          BUILD_PUSH_OUTCOME: ${{ steps.build_push.outcome }}
+          DOCKER_JOB_RESULT: ${{ needs.docker.result }}
           COMMIT_MESSAGE: ${{ github.event.head_commit.message || github.event.pull_request.title || github.sha }}
-          STARTED_AT: ${{ steps.timing.outputs.started_at }}
+          STARTED_AT: ${{ needs.docker.outputs.started_at }}
         run: |
           python - <<'PY'
           import json
@@ -84,12 +90,8 @@ jobs:
           if not webhook_url:
               raise SystemExit(0)
 
-          build_push_outcome = os.environ.get("BUILD_PUSH_OUTCOME", "").strip().lower()
-          job_status = os.environ.get("JOB_STATUS", "").strip().lower()
-          if build_push_outcome:
-              success = build_push_outcome == "success"
-          else:
-              success = job_status == "success"
+          docker_job_result = os.environ.get("DOCKER_JOB_RESULT", "").strip().lower()
+          success = docker_job_result == "success"
           result_text = "成功" if success else "失败"
           color = 0x57F287 if success else 0xED4245
           started_at = int(os.environ.get("STARTED_AT", "0") or "0")
