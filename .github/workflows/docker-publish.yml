@@ -64,7 +64,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Notify Discord webhook
-        if: ${{ always() && secrets.DISCORD_WEBHOOK_URL != '' }}
+        if: ${{ always() }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           JOB_STATUS: ${{ job.status }}
@@ -76,6 +76,10 @@ jobs:
           import os
           import time
           import urllib.request
+
+          webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+          if not webhook_url:
+              raise SystemExit(0)
 
           status = os.environ["JOB_STATUS"].strip().lower()
           success = status == "success"
@@ -114,7 +118,7 @@ jobs:
           }
 
           request = urllib.request.Request(
-              os.environ["DISCORD_WEBHOOK_URL"],
+              webhook_url,
               data=json.dumps(payload).encode("utf-8"),
               headers={"Content-Type": "application/json"},
               method="POST",
