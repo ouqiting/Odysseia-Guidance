@@ -178,30 +178,10 @@ class GPTImageService:
                 )
             return result
 
-        try:
-            result = await self._try_generate_once()
-        except Exception as exc:
-            elapsed = time.perf_counter() - start_time
-            log.error(
-                "GPTImageService: GENERATE 生图失败 elapsed=%.2fs error=%s",
-                elapsed,
-                self._summarize_exception(exc),
-            )
-            raise
-
-        elapsed = time.perf_counter() - start_time
-        if result is None:
-            log.warning(
-                "GPTImageService: GENERATE 生图未返回图片数据 elapsed=%.2fs",
-                elapsed,
-            )
-        else:
-            log.info(
-                "GPTImageService: GENERATE 生图成功 elapsed=%.2fs output_bytes=%s",
-                elapsed,
-                len(result),
-            )
-        return result
+        log.warning(
+            "GPTImageService: 跳过投喂生图，原因=没有可用参考图，避免生成与投喂内容无关的通用图片"
+        )
+        return None
 
     async def _try_edit_once(
         self,

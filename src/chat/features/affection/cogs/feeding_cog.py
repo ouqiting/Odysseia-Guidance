@@ -22,7 +22,12 @@ from src.chat.services.event_service import event_service
 import logging
 
 logger = logging.getLogger(__name__)
-WAITING_IMAGE_PATH = Path(__file__).resolve().parents[5] / "assets" / "waiting_for_image.png"
+ASSETS_DIR = Path(__file__).resolve().parents[5] / "assets"
+WAITING_IMAGE_PATH = ASSETS_DIR / "waiting_for_image.png"
+LOCAL_RESPONSE_FALLBACK_PATH = next(
+    iter(sorted(ASSETS_DIR.glob("ref_*.png"))),
+    None,
+)
 
 
 class FeedingCog(commands.Cog):
@@ -203,6 +208,15 @@ class FeedingCog(commands.Cog):
                         )
                     )
                     embed.set_image(url="attachment://waiting_for_image.png")
+                elif LOCAL_RESPONSE_FALLBACK_PATH and LOCAL_RESPONSE_FALLBACK_PATH.exists():
+                    fallback_image_bytes = LOCAL_RESPONSE_FALLBACK_PATH.read_bytes()
+                    attachments.append(
+                        discord.File(
+                            fp=io.BytesIO(fallback_image_bytes),
+                            filename="feeding_fallback.png",
+                        )
+                    )
+                    embed.set_image(url="attachment://feeding_fallback.png")
                 else:
                     sticker_url = FEEDING_CONFIG.get("RESPONSE_IMAGE_URL")
                     if sticker_url:
