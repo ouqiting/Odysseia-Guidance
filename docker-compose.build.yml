@@ -1,15 +1,18 @@
 services:
   bot_app:
+    pull_policy: build
     build:
       context: .
       dockerfile: Dockerfile
 
   db_migrate:
+    pull_policy: build
     build:
       context: .
       dockerfile: Dockerfile
 
   config_web:
+    pull_policy: build
     build:
       context: .
       dockerfile: Dockerfile

@@ -114,7 +114,7 @@ GPT_IMAGE_CONFIG = {
     "TIMEOUT": 120,
     "REFERENCE_IMAGE_URL": os.getenv(
         "GPT_IMAGE_REFERENCE_URL",
-        "https://cdn.discordapp.com/attachments/1403347767912562728/1418576178326802524/3_632830043818943_00001_.png",
+        "",
     ),
 }
 
@@ -321,7 +321,7 @@ AFFECTION_CONFIG = {
 # --- 投喂功能 ---
 FEEDING_CONFIG = {
     "COOLDOWN_SECONDS": 1,  # 5 minutes
-    "RESPONSE_IMAGE_URL": "https://cdn.discordapp.com/attachments/1403347767912562728/1418576178326802524/3_632830043818943_00001_.png",  # 投喂回应的默认图片URL
+    "RESPONSE_IMAGE_URL": "",  # 默认优先使用本地 assets 中的等待图和参考图兜底
 }
 
 # --- 忏悔功能 ---

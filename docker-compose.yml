@@ -24,7 +24,7 @@ services:
       DB_PORT: 5432
       WEBUI_LOG_SERVER_URL: "http://host.docker.internal:${CONFIG_WEB_PORT:-8080}/api/log"
     volumes:
-      - ./.env:/app/.env:ro
+      - ./.env:/app/.env
       - ./data:/app/data
       - ${BACKUP_OUTPUT_DIR:-./src/backup}:/backup-output
       - /var/run/docker.sock:/var/run/docker.sock
