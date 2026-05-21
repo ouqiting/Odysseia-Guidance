@@ -92,6 +92,7 @@ Odysseia 是一个为 Discord 社区"类脑"量身打造的、功能丰富的AI�
 - 进入 `Settings -> Secrets and variables -> Actions`
 - 新建 `DOCKERHUB_USERNAME`
 - 新建 `DOCKERHUB_TOKEN`
+- 可选：新建 `DISCORD_WEBHOOK_URL`，用于在构建完成后推送 Discord 通知
 
 `DOCKERHUB_TOKEN` 建议使用 Docker Hub 的 Access Token，不要直接使用密码。
 

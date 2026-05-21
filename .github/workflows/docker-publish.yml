@@ -47,6 +47,10 @@ jobs:
             type=ref,event=branch
             type=sha,format=short,prefix=sha-
 
+      - name: Record workflow start time
+        id: timing
+        run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
@@ -58,3 +62,64 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Notify Discord webhook
+        if: ${{ always() && secrets.DISCORD_WEBHOOK_URL != '' }}
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          JOB_STATUS: ${{ job.status }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message || github.event.pull_request.title || github.sha }}
+          STARTED_AT: ${{ steps.timing.outputs.started_at }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          import urllib.request
+
+          status = os.environ["JOB_STATUS"].strip().lower()
+          success = status == "success"
+          result_text = "成功" if success else "失败"
+          color = 0x57F287 if success else 0xED4245
+          started_at = int(os.environ.get("STARTED_AT", "0") or "0")
+          elapsed_seconds = max(int(time.time()) - started_at, 0) if started_at else 0
+          minutes, seconds = divmod(elapsed_seconds, 60)
+          duration_text = f"{minutes}分{seconds}秒" if minutes else f"{seconds}秒"
+          commit_message = os.environ.get("COMMIT_MESSAGE", "").strip().splitlines()[0]
+
+          payload = {
+              "embeds": [
+                  {
+                      "title": "Docker 构建通知",
+                      "color": color,
+                      "fields": [
+                          {
+                              "name": "运行结果",
+                              "value": result_text,
+                              "inline": False,
+                          },
+                          {
+                              "name": "耗时",
+                              "value": duration_text,
+                              "inline": False,
+                          },
+                          {
+                              "name": "提交名称",
+                              "value": commit_message or "(空)",
+                              "inline": False,
+                          },
+                      ],
+                  }
+              ]
+          }
+
+          request = urllib.request.Request(
+              os.environ["DISCORD_WEBHOOK_URL"],
+              data=json.dumps(payload).encode("utf-8"),
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(request) as response:
+              if response.status >= 400:
+                  raise RuntimeError(f"Discord webhook failed with status {response.status}")
+          PY
