@@ -7,6 +7,8 @@
 !.devcontainer/Dockerfile
 !requirements.txt
 !alembic.ini
+!assets/
+!assets/**
 !src/
 !src/**
 !alembic/

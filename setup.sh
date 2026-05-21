@@ -26,6 +26,9 @@ WARM_4='\033[38;5;203m' # Dark Pink
 WARM_5='\033[38;5;198m' # Hot Pink
 WARM_6='\033[38;5;163m' # Purple
 NC='\033[0m'
+DEFAULT_APP_IMAGE="docker.io/ouqiting/odysseia-guidance:latest"
+APP_IMAGE="$DEFAULT_APP_IMAGE"
+DEPLOYMENT_MODE=""
 
 # 打印带颜色的消息 - 神所娘风格
 say_hello() {
@@ -132,6 +135,39 @@ resolve_env_template() {
     else
         say_oops "没有找到 .env.example 或 env.example，暂时没法生成配置文件哦～"
         exit 1
+    fi
+}
+
+# 读取单行环境变量
+read_env_value() {
+    local key="$1"
+    local file_path="${2:-.env}"
+    local line=""
+    local value=""
+
+    if [ ! -f "$file_path" ]; then
+        return 1
+    fi
+
+    line=$(grep -E "^${key}=" "$file_path" | tail -n 1) || return 1
+    value="${line#*=}"
+
+    if [[ "$value" =~ ^\".*\"$ ]]; then
+        value="${value:1:${#value}-2}"
+    fi
+
+    printf '%s\n' "$value"
+}
+
+# 载入现有 APP_IMAGE 配置
+load_current_app_image() {
+    local current_image=""
+
+    current_image=$(read_env_value "APP_IMAGE" ".env" 2>/dev/null || true)
+    if [ -n "$current_image" ]; then
+        APP_IMAGE="$current_image"
+    else
+        APP_IMAGE="$DEFAULT_APP_IMAGE"
     fi
 }
 
@@ -357,6 +393,43 @@ configure_other() {
     COIN_REWARD_GUILD_IDS=$(ask_question "类脑币奖励服务器 ID（多个用逗号分隔）" "$GUILD_ID" "false")
 }
 
+# 选择部署方式
+select_deployment_mode() {
+    echo ""
+    say_wait "最后选一下这次怎么让神所娘住进来吧～"
+    echo "────────────────────────────────────────"
+    echo -e "${CYAN}  1) 直接拉取镜像（推荐，适合服务器部署）${NC}"
+    echo -e "${CYAN}  2) 使用本地代码构建（适合开发调试）${NC}"
+    echo ""
+
+    local reply=""
+    printf "请选择部署方式 [1/2，默认1]: "
+    read -r reply < /dev/tty
+    echo ""
+
+    case "$reply" in
+        2)
+            DEPLOYMENT_MODE="build"
+            say_success "这次会使用本地代码构建～"
+            say_hello "镜像标签：$APP_IMAGE"
+            ;;
+        *)
+            DEPLOYMENT_MODE="pull"
+            say_success "这次会直接拉取镜像～"
+            say_hello "镜像地址：$APP_IMAGE"
+            ;;
+    esac
+}
+
+# 按当前部署方式运行 compose
+run_compose() {
+    if [ "$DEPLOYMENT_MODE" = "build" ]; then
+        docker compose -f docker-compose.yml -f docker-compose.build.yml "$@"
+    else
+        docker compose "$@"
+    fi
+}
+
 # 生成 .env 文件
 generate_env_file() {
     echo ""
@@ -375,6 +448,7 @@ generate_env_file() {
     replace_env_line "DISABLED_TOOLS" "$DISABLED_TOOLS"
     replace_env_line "COIN_REWARD_GUILD_IDS" "$COIN_REWARD_GUILD_IDS"
     replace_env_line "FORUM_SEARCH_CHANNEL_IDS" "$FORUM_SEARCH_CHANNEL_IDS"
+    replace_env_line "APP_IMAGE" "$APP_IMAGE"
     replace_env_line "CUSTOM_GEMINI_URL" "$CUSTOM_GEMINI_URL"
     replace_env_line "CUSTOM_GEMINI_API_KEY" "$CUSTOM_GEMINI_API_KEY"
     replace_env_line "DEEPSEEK_URL" "$DEEPSEEK_URL"
@@ -415,7 +489,7 @@ wait_for_db() {
     echo ""
 
     while [ $attempt -le $max_attempts ]; do
-        if docker compose exec -T db pg_isready -h $db_host -p $db_port > /dev/null 2>&1; then
+        if run_compose exec -T db pg_isready -h $db_host -p $db_port > /dev/null 2>&1; then
             say_success "数据库已就绪～"
             echo ""
             return 0
@@ -428,7 +502,7 @@ wait_for_db() {
 
     echo ""
     say_oops "数据库启动超时，请检查 Docker 容器状态"
-    docker compose ps db
+    run_compose ps db
     exit 1
 }
 
@@ -444,7 +518,7 @@ wait_for_migration() {
     echo ""
 
     while [ $attempt -le $max_attempts ]; do
-        migrate_container_id=$(docker compose ps -aq db_migrate 2>/dev/null | tr -d '\r')
+        migrate_container_id=$(run_compose ps -aq db_migrate 2>/dev/null | tr -d '\r')
 
         if [ -n "$migrate_container_id" ]; then
             status=$(docker inspect -f '{{.State.Status}}' "$migrate_container_id" 2>/dev/null | tr -d '\r')
@@ -458,7 +532,7 @@ wait_for_migration() {
                 fi
 
                 say_oops "数据库整理失败了..."
-                docker compose logs db_migrate
+                run_compose logs db_migrate
                 exit 1
             fi
         fi
@@ -470,7 +544,7 @@ wait_for_migration() {
 
     echo ""
     say_oops "等待数据库整理超时了..."
-    docker compose ps
+    run_compose ps
     exit 1
 }
 
@@ -485,7 +559,7 @@ wait_for_bot_app() {
     echo ""
 
     while [ $attempt -le $max_attempts ]; do
-        bot_container_id=$(docker compose ps -q bot_app 2>/dev/null | tr -d '\r')
+        bot_container_id=$(run_compose ps -q bot_app 2>/dev/null | tr -d '\r')
 
         if [ -n "$bot_container_id" ]; then
             status=$(docker inspect -f '{{.State.Status}}' "$bot_container_id" 2>/dev/null | tr -d '\r')
@@ -498,7 +572,7 @@ wait_for_bot_app() {
 
             if [ "$status" = "exited" ] || [ "$status" = "dead" ]; then
                 say_oops "神所娘好像没有顺利起床呢..."
-                docker compose logs bot_app
+                run_compose logs bot_app
                 exit 1
             fi
         fi
@@ -510,7 +584,7 @@ wait_for_bot_app() {
 
     echo ""
     say_oops "等待神所娘上线超时了..."
-    docker compose ps
+    run_compose ps
     exit 1
 }
 
@@ -526,23 +600,36 @@ start_service() {
         exit 1
     fi
 
+    if [ -z "$DEPLOYMENT_MODE" ]; then
+        select_deployment_mode
+    fi
+
     # 停止现有容器
     say_wait "清理一下旧环境..."
-    docker compose down 2>/dev/null || true
+    run_compose down 2>/dev/null || true
 
-    # 构建镜像
-    say_wait "正在准备神所娘的房间（构建镜像）..."
-    say_hello "这可能需要几分钟，耐心等待哦～"
-    if docker compose build; then
-        say_success "房间准备好了～"
+    if [ "$DEPLOYMENT_MODE" = "build" ]; then
+        say_wait "正在准备神所娘的房间（本地构建镜像）..."
+        say_hello "这可能需要几分钟，耐心等待哦～"
+        if run_compose build; then
+            say_success "房间准备好了～"
+        else
+            say_oops "房间装修出问题了..."
+            exit 1
+        fi
     else
-        say_oops "房间装修出问题了..."
-        exit 1
+        say_wait "正在从远处把神所娘接过来（拉取镜像）..."
+        if run_compose pull; then
+            say_success "镜像已经准备好啦～"
+        else
+            say_oops "镜像拉取失败了..."
+            exit 1
+        fi
     fi
 
     # 启动服务
     say_wait "让神所娘住进来..."
-    if docker compose up -d; then
+    if run_compose up -d; then
         say_success "神所娘已经住进来了～"
     else
         say_oops "搬家过程出问题了..."
@@ -559,7 +646,7 @@ start_service() {
     # 显示状态
     echo ""
     say_wait "看看神所娘的状态～"
-    docker compose ps
+    run_compose ps
     echo ""
 
     echo ""
@@ -573,16 +660,22 @@ start_service() {
     echo "  查看日志: docker compose logs -f bot_app"
     echo "  停止服务: docker compose down"
     echo "  重启服务: docker compose restart"
+    echo "  拉镜像更新: docker compose pull && docker compose up -d"
+    echo "  本地构建: docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build"
     echo ""
 }
 
 # 主函数
 main() {
     print_welcome
+    load_current_app_image
 
     # 检查 .env 文件
     if ! check_env_file; then
-        ask_start_service && start_service
+        if ask_start_service; then
+            select_deployment_mode
+            start_service
+        fi
         exit 0
     fi
 
@@ -600,13 +693,15 @@ main() {
 
     # 询问是否启动服务
     if ask_start_service; then
+        select_deployment_mode
         start_service
     else
         say_success "配置文件已经准备好啦～"
         echo ""
         say_hello "想找神所娘的时候，运行这些命令就好："
         echo ""
-        echo -e "${CYAN}  docker compose up -d --build${NC}"
+        echo -e "${CYAN}  直接拉镜像：docker compose pull && docker compose up -d${NC}"
+        echo -e "${CYAN}  本地构建：docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build${NC}"
         echo ""
     fi
 }
