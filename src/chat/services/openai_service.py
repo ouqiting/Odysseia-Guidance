@@ -1929,7 +1929,7 @@ class OpenAIService:
                 channel_name=effective_model_name,
                 user_message="哎呀，我好像陷入了一个复杂的思考循环里，换个话题聊聊吧！",
                 failure_kind="max_calls_exceeded",
-                should_lock_channel=True,
+                should_lock_channel=False,
             )
 
         except CustomModelChannelError as e:

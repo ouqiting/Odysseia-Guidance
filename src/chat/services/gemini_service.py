@@ -826,6 +826,19 @@ class GeminiService:
                     )
                 except OpenAIChannelExecutionFailure as exc:
                     last_failure = exc
+                    if not exc.should_lock_channel:
+                        log.info(
+                            "[OpenAI Fallback] 渠道返回非锁定错误，直接向用户返回 | order=%s | selected=%s | failure_kind=%s | message=%s",
+                            fallback_state.order,
+                            fallback_model,
+                            exc.failure_kind,
+                            exc.user_message,
+                        )
+                        self.last_called_tools = list(self.openai_service.last_called_tools)
+                        return self.openai_service._apply_blacklist_notice(
+                            exc.user_message,
+                            blacklist_punishment_active,
+                        )
                     locked_to_next_day = False
                     try:
                         if exc.should_lock_channel:
