@@ -23,6 +23,7 @@ project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
+from web.log import BotLogStore
 from src.runtime_env import load_project_dotenv
 
 dotenv_path = load_project_dotenv(__file__, parents=1)
@@ -51,16 +52,18 @@ WEB_CONTAINER_NAME = os.getenv("WEB_CONTAINER_NAME", "config_web")
 WEBUI_REMEMBER_ME_MAX_AGE = int(
     os.getenv("WEBUI_REMEMBER_ME_MAX_AGE", str(60 * 60 * 24 * 30))
 )
+bot_log_dir = os.getenv("WEBUI_BOT_LOG_DIR", "logs/webui")
+if not os.path.isabs(bot_log_dir):
+    bot_log_dir = os.path.join(project_root, bot_log_dir)
+
+BOT_LOG_MAX_BYTES = int(os.getenv("WEBUI_BOT_LOG_MAX_BYTES", str(1024 * 1024)))
+BOT_LOG_BACKUP_COUNT = int(os.getenv("WEBUI_BOT_LOG_BACKUP_COUNT", "20"))
 last_heartbeat_time = datetime.utcnow()
 heartbeat_tolerance_seconds = 5.0
 SYSTEM_STATS_HISTORY = deque(maxlen=1440)
-BOT_LOG_TAIL_LINES = int(os.getenv("WEBUI_BOT_LOG_TAIL_LINES", "1000"))
 WEBUI_LOG_TAIL_LINES = int(os.getenv("WEBUI_SERVER_LOG_TAIL_LINES", "1000"))
-BOT_LOG_RESPONSE_LIMIT = int(os.getenv("WEBUI_BOT_LOG_RESPONSE_LIMIT", "200"))
 WEBUI_LOG_RESPONSE_LIMIT = int(os.getenv("WEBUI_SERVER_LOG_RESPONSE_LIMIT", "200"))
-BOT_LOG_BUFFER = deque(maxlen=BOT_LOG_TAIL_LINES)
 WEBUI_LOG_BUFFER = deque(maxlen=WEBUI_LOG_TAIL_LINES)
-BOT_LOG_LAST_ID = 0
 WEBUI_LOG_LAST_ID = 0
 KNOWN_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 BOT_LOG_PATTERN = re.compile(
@@ -74,6 +77,11 @@ WEBUI_LOG_PATTERN = re.compile(
     r"(?P<logger>.+?) - "
     r"(?P<level>[A-Z]+) - "
     r"(?P<message>[\s\S]*)$"
+)
+BOT_LOG_STORE = BotLogStore(
+    log_dir=bot_log_dir,
+    max_bytes=BOT_LOG_MAX_BYTES,
+    backup_count=BOT_LOG_BACKUP_COUNT,
 )
 
 
@@ -196,11 +204,8 @@ def build_structured_entry_from_record(
 
 
 def append_bot_log_entry(log_entry: Any):
-    global BOT_LOG_LAST_ID
-    BOT_LOG_LAST_ID += 1
     structured_entry = normalize_bot_log_entry(log_entry)
-    structured_entry["id"] = BOT_LOG_LAST_ID
-    BOT_LOG_BUFFER.append(structured_entry)
+    return BOT_LOG_STORE.append_entry(structured_entry)
 
 
 def append_webui_log_entry(log_entry: Any):
@@ -461,20 +466,39 @@ def restart_web(request: Request):
 
 
 @web_app.get("/api/logs")
-def get_logs(request: Request, date: str | None = None, after_id: int | None = None):
+def get_logs(
+    request: Request,
+    date: str | None = None,
+    after_id: int | None = None,
+    before_file: str | None = None,
+):
     if not is_logged_in(request):
         return unauthorized_response(api=True)
     current_date = datetime.utcnow().strftime("%Y-%m-%d")
 
     try:
-        payload = build_log_payload(
-            BOT_LOG_BUFFER,
-            BOT_LOG_TAIL_LINES,
-            BOT_LOG_RESPONSE_LIMIT,
-            after_id,
-        )
+        if before_file and after_id is not None:
+            return JSONResponse(
+                {"status": "error", "message": "before_file 和 after_id 不能同时使用"},
+                status_code=400,
+            )
+
+        if before_file:
+            payload = BOT_LOG_STORE.get_history_payload(before_file)
+        else:
+            payload = BOT_LOG_STORE.get_latest_payload(after_id)
         payload["date"] = current_date
         return JSONResponse(payload)
+    except FileNotFoundError:
+        return JSONResponse(
+            {"status": "error", "message": "请求的历史日志文件不存在"},
+            status_code=404,
+        )
+    except ValueError as exc:
+        return JSONResponse(
+            {"status": "error", "message": str(exc)},
+            status_code=400,
+        )
     except Exception as exc:
         logger.error(f"Error in get_logs: {exc}")
         return JSONResponse(

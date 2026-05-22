@@ -218,7 +218,7 @@
                         <label class="field">
                             <span>日志等级</span>
                             <div id="bot-log-level-filter" class="filter-chip-group">
-                                <label class="filter-chip"><input type="checkbox" value="DEBUG" checked><span>DEBUG</span></label>
+                                <label class="filter-chip"><input type="checkbox" value="DEBUG"><span>DEBUG</span></label>
                                 <label class="filter-chip"><input type="checkbox" value="INFO" checked><span>INFO</span></label>
                                 <label class="filter-chip"><input type="checkbox" value="WARNING" checked><span>WARNING</span></label>
                                 <label class="filter-chip"><input type="checkbox" value="ERROR" checked><span>ERROR</span></label>
@@ -236,6 +236,7 @@
                     </div>
                     <div class="toolbar-actions">
                         <button id="bot-auto-scroll-toggle" class="soft-button toolbar-toggle" type="button" aria-pressed="false">自动跳转底部</button>
+                        <button id="bot-load-more-btn" class="soft-button toolbar-toggle" type="button" disabled>加载更多</button>
                     </div>
 
                     <div class="panel-meta" id="bot-log-summary">显示当前缓存中的 Bot 日志</div>
@@ -333,7 +334,7 @@
                         <label class="field">
                             <span>日志等级</span>
                             <div id="webui-log-level-filter" class="filter-chip-group">
-                                <label class="filter-chip"><input type="checkbox" value="DEBUG" checked><span>DEBUG</span></label>
+                                <label class="filter-chip"><input type="checkbox" value="DEBUG"><span>DEBUG</span></label>
                                 <label class="filter-chip"><input type="checkbox" value="INFO" checked><span>INFO</span></label>
                                 <label class="filter-chip"><input type="checkbox" value="WARNING" checked><span>WARNING</span></label>
                                 <label class="filter-chip"><input type="checkbox" value="ERROR" checked><span>ERROR</span></label>
@@ -397,6 +398,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const botLogLevelFilter = document.getElementById('bot-log-level-filter');
     const botLogSummary = document.getElementById('bot-log-summary');
     const botAutoScrollToggle = document.getElementById('bot-auto-scroll-toggle');
+    const botLoadMoreBtn = document.getElementById('bot-load-more-btn');
 
     const webuiLogContainer = document.getElementById('webui-log-container');
     const webuiLogLevelFilter = document.getElementById('webui-log-level-filter');
@@ -422,7 +424,11 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentView = 'dashboard';
     let lastBotLogId = 0;
     let lastWebUILogId = 0;
+    let botCurrentFile = '';
+    let botNextBeforeFile = null;
+    let botLoadedFileCount = 0;
     let isBotLogFetchInFlight = false;
+    let isBotLogHistoryFetchInFlight = false;
     let isWebUILogFetchInFlight = false;
     let isSystemInfoFetchInFlight = false;
     const botLogRenderState = { pending: false, content: '', mode: 'text' };
@@ -583,6 +589,29 @@ document.addEventListener('DOMContentLoaded', () => {
     const toggleAutoScroll = (button, enabled) => {
         button.classList.toggle('is-active', enabled);
         button.setAttribute('aria-pressed', enabled ? 'true' : 'false');
+    };
+
+    const updateBotLoadMoreButton = () => {
+        const isLoading = isBotLogHistoryFetchInFlight;
+        const hasMore = Boolean(botNextBeforeFile);
+        botLoadMoreBtn.disabled = isLoading || !hasMore;
+        if (isLoading) {
+            botLoadMoreBtn.textContent = '加载中...';
+            return;
+        }
+        botLoadMoreBtn.textContent = hasMore ? '加载更多' : '没有更多日志';
+    };
+
+    const buildBotLogSummaryText = (entryCount, visibleLineCount, isFilteredView = false) => {
+        const fileText = botCurrentFile || '未加载';
+        const loadedFilesText = botLoadedFileCount > 0 ? `${botLoadedFileCount} 个文件` : '0 个文件';
+        const moreText = botNextBeforeFile ? '可继续加载更多' : '历史日志已全部加载';
+
+        if (isFilteredView) {
+            return `当前文件 ${fileText}，已加载 ${loadedFilesText}，${moreText}`;
+        }
+
+        return `${entryCount} 条日志，${visibleLineCount} 行内容，当前文件 ${fileText}，已加载 ${loadedFilesText}，${moreText}`;
     };
 
     const isSelectionInside = (container) => {
@@ -749,7 +778,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (botLogRenderState.pending) {
                 return;
             }
-            botLogSummary.textContent = '当前筛选条件下没有匹配的 Bot 日志';
+            botLogSummary.textContent = `当前筛选条件下没有匹配的 Bot 日志，${buildBotLogSummaryText(0, 0, true)}`;
             document.getElementById('dashboard-log-count-text').textContent = '0';
             document.getElementById('dashboard-log-lines-text').textContent = '0 行 Bot 日志';
             return;
@@ -769,7 +798,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (botLogRenderState.pending) {
             return;
         }
-        botLogSummary.textContent = `${entries.length} 条日志，${visibleLineCount} 行内容，时区 ${selectedTimezone}`;
+        botLogSummary.textContent = `${buildBotLogSummaryText(entries.length, visibleLineCount)}，时区 ${selectedTimezone}`;
         document.getElementById('dashboard-log-count-text').textContent = String(entries.length);
         document.getElementById('dashboard-log-lines-text').textContent = `${visibleLineCount} 行 Bot 日志`;
         if (botAutoScrollEnabled && rendered) {
@@ -861,33 +890,71 @@ document.addEventListener('DOMContentLoaded', () => {
                 ? `?after_id=${encodeURIComponent(lastBotLogId)}`
                 : '';
             const response = await fetch(`/api/logs${query}`, { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`Failed to fetch bot logs: ${response.status}`);
+            }
             const data = await response.json();
             const incomingEntries = normalizeLogEntries(data.entries);
             const shouldReset = forceFull || !lastBotLogId || Boolean(data.reset_required);
 
             if (shouldReset) {
                 fullBotLogEntries = incomingEntries;
+                botCurrentFile = typeof data.current_file === 'string' ? data.current_file : '';
+                botNextBeforeFile = typeof data.next_before === 'string' ? data.next_before : null;
+                botLoadedFileCount = botCurrentFile ? 1 : 0;
             } else if (incomingEntries.length) {
                 fullBotLogEntries = [...fullBotLogEntries, ...incomingEntries];
-                if (data.tail_lines && fullBotLogEntries.length > data.tail_lines) {
-                    fullBotLogEntries = fullBotLogEntries.slice(-data.tail_lines);
-                }
             }
 
             if (typeof data.last_id === 'number') {
                 lastBotLogId = data.last_id;
             }
-            if (data.tail_lines) {
-                botLogSummary.textContent = `显示最近 ${data.tail_lines} 条缓存日志，时区 ${selectedTimezone}`;
+            if (!shouldReset && typeof data.next_before === 'string') {
+                botNextBeforeFile = data.next_before;
+            } else if (!shouldReset && data.next_before === null) {
+                botNextBeforeFile = null;
             }
+            updateBotLoadMoreButton();
             renderBotLogs();
         } catch (error) {
             fullBotLogEntries = [];
             lastBotLogId = 0;
+            botCurrentFile = '';
+            botNextBeforeFile = null;
+            botLoadedFileCount = 0;
             syncLogContent(botLogContainer, botLogRenderState, 'Error fetching Bot logs.', 'text');
             botLogSummary.textContent = 'Bot 日志加载失败';
+            updateBotLoadMoreButton();
         } finally {
             isBotLogFetchInFlight = false;
+        }
+    };
+
+    const fetchMoreBotLogs = async () => {
+        if (isBotLogHistoryFetchInFlight || !botNextBeforeFile) {
+            return;
+        }
+
+        isBotLogHistoryFetchInFlight = true;
+        updateBotLoadMoreButton();
+        try {
+            const response = await fetch(`/api/logs?before_file=${encodeURIComponent(botNextBeforeFile)}`, { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`Failed to fetch bot log history: ${response.status}`);
+            }
+            const data = await response.json();
+            const incomingEntries = normalizeLogEntries(data.entries);
+            if (incomingEntries.length) {
+                fullBotLogEntries = [...incomingEntries, ...fullBotLogEntries];
+            }
+            botNextBeforeFile = typeof data.next_before === 'string' ? data.next_before : null;
+            botLoadedFileCount += 1;
+            renderBotLogs();
+        } catch (error) {
+            botLogSummary.textContent = '加载历史 Bot 日志失败';
+        } finally {
+            isBotLogHistoryFetchInFlight = false;
+            updateBotLoadMoreButton();
         }
     };
 
@@ -1079,6 +1146,10 @@ document.addEventListener('DOMContentLoaded', () => {
             scrollLogToBottom(botLogContainer);
         }
     });
+
+    botLoadMoreBtn.addEventListener('click', () => {
+        fetchMoreBotLogs();
+    });
     webuiAutoScrollToggle.addEventListener('click', () => {
         webuiAutoScrollEnabled = !webuiAutoScrollEnabled;
         toggleAutoScroll(webuiAutoScrollToggle, webuiAutoScrollEnabled);
@@ -1102,6 +1173,7 @@ document.addEventListener('DOMContentLoaded', () => {
     toggleAutoScroll(webuiAutoScrollToggle, webuiAutoScrollEnabled);
     document.getElementById('dashboard-log-count-text').textContent = '--';
     document.getElementById('dashboard-log-lines-text').textContent = '按需加载';
+    updateBotLoadMoreButton();
     document.getElementById('dashboard-webui-count-text').textContent = '--';
     document.getElementById('dashboard-webui-state-text').textContent = '按需加载';
     setActiveView('dashboard');
