@@ -10,6 +10,7 @@ import httpx
 from src.chat.features.chat_settings.services.chat_settings_service import (
     chat_settings_service,
 )
+from src.chat.services.openai_fallback_service import openai_fallback_service
 from src.chat.features.tools.tool_metadata import tool_metadata
 from src.chat.utils.custom_model_api_keys import (
     get_custom_model_api_key_raw_value,
@@ -142,6 +143,42 @@ def _get_custom_api_key() -> str:
 
 async def _get_current_model() -> str:
     return await chat_settings_service.get_current_ai_model()
+
+
+async def _get_effective_model_for_balance_query(current_model: str) -> str:
+    normalized_current_model = str(current_model or "").strip()
+    if not normalized_current_model:
+        return normalized_current_model
+
+    if not openai_fallback_service.is_supported_model(normalized_current_model):
+        return normalized_current_model
+
+    try:
+        fallback_state = await openai_fallback_service.get_daily_state(
+            normalized_current_model
+        )
+    except Exception:
+        log.warning(
+            "读取 OpenAI 回退当前生效渠道失败，余额查询将回退使用主模型。model=%s",
+            normalized_current_model,
+            exc_info=True,
+        )
+        return normalized_current_model
+
+    active_order = list(fallback_state.active_order)
+    if not active_order:
+        return normalized_current_model
+
+    effective_model = str(active_order[0] or "").strip() or normalized_current_model
+    if effective_model != normalized_current_model:
+        log.info(
+            "get_api_balance 检测到当前主模型已回退到其他渠道，将按当前生效渠道查询余额。primary=%s effective=%s order=%s failed=%s",
+            normalized_current_model,
+            effective_model,
+            fallback_state.order,
+            fallback_state.failed_channels,
+        )
+    return effective_model
 
 
 # ===== DeepSeek 余额查询 =====
@@ -752,29 +789,30 @@ async def get_api_balance(log_detailed: bool = False, **kwargs) -> Dict[str, Any
             error=f"读取当前模型失败: {str(exc)}",
         )
 
-    model_lower = (current_model or "").lower().strip()
+    effective_model = await _get_effective_model_for_balance_query(current_model)
+    model_lower = (effective_model or "").lower().strip()
 
     if "deepseek" in model_lower:
         return await _get_deepseek_balance(
-            current_model=current_model,
+            current_model=effective_model,
             log_detailed=log_detailed,
         )
 
     if "kimi" in model_lower or "moonshot" in model_lower:
         return await _get_moonshot_balance(
-            current_model=current_model,
+            current_model=effective_model,
             log_detailed=log_detailed,
         )
 
     if model_lower == "custom":
         return await _get_custom_balance(
-            current_model=current_model,
+            current_model=effective_model,
             log_detailed=log_detailed,
         )
 
     return _build_payload(
         ok=False,
         provider="unknown",
-        model=current_model,
-        error=f"当前模型 '{current_model}' 暂不支持余额查询。",
+        model=effective_model,
+        error=f"当前模型 '{effective_model}' 暂不支持余额查询。",
     )
