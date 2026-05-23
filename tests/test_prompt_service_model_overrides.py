@@ -325,7 +325,7 @@ def test_custom_variant_reads_latest_value_from_project_dotenv(
 
 
 @pytest.mark.asyncio
-async def test_build_chat_prompt_appends_think_guide_from_final_system_prompt(
+async def test_build_chat_prompt_keeps_think_guide_inside_system_prompt(
     monkeypatch: pytest.MonkeyPatch, prompt_service: PromptService
 ):
     monkeypatch.setattr(
@@ -356,13 +356,65 @@ async def test_build_chat_prompt_appends_think_guide_from_final_system_prompt(
         model_name="custom-deepseek-expert-reasoner",
     )
 
-    assert result[-3]["role"] == "user"
-    assert result[-3]["parts"] == ["[测试用户]: 你好"]
-    assert result[-2] == {"role": "model", "parts": ["我已了解用户输入"]}
-    assert result[-1] == {
-        "role": "user",
-        "parts": ["先进行完整推理，再给出结论。"],
-    }
+    system_prompt_turn = next(
+        turn
+        for turn in result
+        if turn["role"] == "user"
+        and any(
+            isinstance(part, str) and "<think_guide>" in part for part in turn["parts"]
+        )
+    )
+
+    assert "先进行完整推理，再给出结论。" in system_prompt_turn["parts"][0]
+    assert result[-1] == {"role": "user", "parts": ["[测试用户]: 你好"]}
+    assert all(turn.get("parts") != ["我已了解用户输入"] for turn in result)
+    assert all(turn.get("parts") != ["先进行完整推理，再给出结论。"] for turn in result)
+
+
+@pytest.mark.asyncio
+async def test_build_chat_prompt_moves_channel_context_before_dynamic_knowledge_and_final_rules(
+    monkeypatch: pytest.MonkeyPatch, prompt_service: PromptService
+):
+    monkeypatch.setattr(
+        prompt_service_module,
+        "PROMPT_CONFIG",
+        {
+            "default": dict(MINIMAL_DEFAULT_CONFIG),
+        },
+    )
+
+    result = await prompt_service.build_chat_prompt(
+        user_name="测试用户",
+        message="你好",
+        replied_message=None,
+        images=None,
+        channel_context=[
+            {"role": "user", "parts": ["历史消息-用户"]},
+            {"role": "model", "parts": ["历史消息-模型"]},
+        ],
+        world_book_entries=[
+            {"content": "世界设定-星港禁航", "metadata": {}},
+        ],
+        affection_status=None,
+        guild_name="测试服务器",
+        location_name="测试地点",
+        model_name="kimi-k2.5",
+    )
+
+    def find_turn_index(target: str) -> int:
+        for index, turn in enumerate(result):
+            for part in turn.get("parts", []):
+                if isinstance(part, str) and target in part:
+                    return index
+        raise AssertionError(f"未找到目标片段: {target}")
+
+    system_index = find_turn_index("default-core")
+    channel_index = find_turn_index("历史消息-用户")
+    world_book_index = find_turn_index("世界设定-星港禁航")
+    final_rule_index = find_turn_index("对了，还有一些规则\ndefault-final-instruction")
+    current_input_index = find_turn_index("[测试用户]: 你好")
+
+    assert system_index < channel_index < world_book_index < final_rule_index < current_input_index
 
 
 @pytest.mark.asyncio

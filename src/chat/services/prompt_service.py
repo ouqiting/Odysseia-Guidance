@@ -653,14 +653,9 @@ class PromptService:
 
         # 填充核心提示词
         core_prompt = core_prompt_template
-        think_guide_content = self._extract_prompt_tag_content(
-            core_prompt, "think_guide"
-        )
-
         final_conversation.append({"role": "user", "parts": [core_prompt]})
         final_conversation.append({"role": "model", "parts": ["我在线啦，随时开聊！"]})
-
-    # --- 规则独立轮注入 ---
+        final_injection_content = ""
         final_instruction_template = self._get_model_specific_prompt(
             model_name, "JAILBREAK_FINAL_INSTRUCTION"
         )
@@ -672,11 +667,6 @@ class PromptService:
                 location_name=location_name,
                 current_time=current_beijing_time,
             )
-        if final_instruction_template:
-            final_rule_user_prompt = f"对了，还有一些规则\n{final_injection_content}"
-            final_conversation.append({"role": "user", "parts": [final_rule_user_prompt]})
-            final_conversation.append({"role": "model", "parts": ["我会遵守的"]})
-            log.debug("已将最终规则作为独立轮次注入到当前用户输入之前。")
 
         
         # --- 注入帖子首楼内容（保存人设后面） ---
@@ -687,7 +677,12 @@ class PromptService:
             log.info("已将帖子首楼内容注入到人设之后")
             delattr(self, "_thread_first_post_to_inject")
 
-        # --- 2. 动态知识注入 ---
+        # --- 2. 频道历史上下文注入 ---
+        if channel_context:
+            final_conversation.extend(channel_context)
+            log.debug(f"已提前合并频道上下文，长度为: {len(channel_context)}")
+
+        # --- 3. 动态知识注入 ---
         # 注入世界之书 (RAG) 内容
         world_book_formatted_content = self._format_world_book_entries(
             world_book_entries, user_name
@@ -909,7 +904,7 @@ class PromptService:
             )
             final_conversation.append({"role": "model", "parts": ["记住啦"]})
 
-        # --- 新增：注入好感度和用户档案 ---
+        # --- 4. 注入好感度和用户档案 ---
         affection_prompt = (
             affection_status.get("prompt", "").replace("用户", user_name)
             if affection_status
@@ -975,12 +970,7 @@ class PromptService:
             )
             final_conversation.append({"role": "model", "parts": ["这事我知道了"]})
 
-        # --- 3. 频道历史上下文注入 ---
-        if channel_context:
-            final_conversation.extend(channel_context)
-            log.debug(f"已合并频道上下文，长度为: {len(channel_context)}")
-
-        # --- 4. 回复上下文注入 (后置) ---
+        # --- 5. 回复上下文注入 (后置) ---
         # 保存回复上下文，稍后与当前用户输入合并
         self._reply_context_to_inject = None
         if replied_message:
@@ -988,14 +978,14 @@ class PromptService:
             self._reply_context_to_inject = f"上下文提示：{user_name} 正在进行回复操作。以下是ta所回复的原始消息内容和作者：\n{replied_message}\n以下是当前输入内容:"
             log.debug("已保存回复消息上下文，将在当前用户输入时合并注入。")
 
-        
-
+        # --- 6. 最终规则独立轮注入（后置） ---
         if final_injection_content:
-            # Gemini API 不允许连续的 'user' 角色消息，必要时先补一条过渡 model 消息。
             if final_conversation and final_conversation[-1].get("role") == "user":
                 final_conversation.append({"role": "model", "parts": ["收到"]})
-
-
+            final_rule_user_prompt = f"对了，还有一些规则\n{final_injection_content}"
+            final_conversation.append({"role": "user", "parts": [final_rule_user_prompt]})
+            final_conversation.append({"role": "model", "parts": ["我会遵守的"]})
+            log.debug("已将最终规则后置注入到当前用户输入之前。")
 
         # --- 4. 当前用户输入注入---
         current_user_parts = []
@@ -1193,15 +1183,6 @@ class PromptService:
                 log.debug("将当前用户输入合并到上一条 'user' 消息中。")
             else:
                 final_conversation.append({"role": "user", "parts": cleaned_user_parts})
-
-            if think_guide_content:
-                final_conversation.append(
-                    {"role": "model", "parts": ["我已了解用户输入"]}
-                )
-                final_conversation.append(
-                    {"role": "user", "parts": [think_guide_content]}
-                )
-                log.debug("检测到 <think_guide>，已在当前用户输入后追加思维链要求。")
 
         if chat_settings_service.get_full_context_logging_enabled_sync():
             log.debug(
