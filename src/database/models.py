@@ -371,6 +371,8 @@ class TokenUsage(Base):
     input_tokens: Mapped[int] = mapped_column(default=0)
     output_tokens: Mapped[int] = mapped_column(default=0)
     total_tokens: Mapped[int] = mapped_column(default=0)
+    prompt_cache_hit_tokens: Mapped[int] = mapped_column(default=0)
+    prompt_cache_miss_tokens: Mapped[int] = mapped_column(default=0)
     call_count: Mapped[int] = mapped_column(default=0)
 
     def __repr__(self):

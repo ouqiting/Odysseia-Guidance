@@ -710,6 +710,18 @@ class ChatSettingsView(View):
         input_tokens = self.token_usage.input_tokens or 0
         output_tokens = self.token_usage.output_tokens or 0
         total_tokens = self.token_usage.total_tokens or 0
+        prompt_cache_hit_tokens = getattr(
+            self.token_usage, "prompt_cache_hit_tokens", 0
+        ) or 0
+        prompt_cache_miss_tokens = getattr(
+            self.token_usage, "prompt_cache_miss_tokens", 0
+        ) or 0
+        cache_prompt_total = prompt_cache_hit_tokens + prompt_cache_miss_tokens
+        cache_hit_rate = (
+            f"{(prompt_cache_hit_tokens / cache_prompt_total) * 100:.2f}%"
+            if cache_prompt_total > 0
+            else "N/A"
+        )
         call_count = self.token_usage.call_count or 0
         average_per_call = total_tokens // call_count if call_count > 0 else 0
         usage_date = self.token_usage.date.strftime("%Y-%m-%d")
@@ -721,6 +733,17 @@ class ChatSettingsView(View):
         embed.add_field(name="📥 Input", value=f"{input_tokens:,}", inline=False)
         embed.add_field(name="📤 Output", value=f"{output_tokens:,}", inline=False)
         embed.add_field(name="📈 Total", value=f"{total_tokens:,}", inline=False)
+        embed.add_field(
+            name="🧠 Cache Hit",
+            value=f"{prompt_cache_hit_tokens:,}",
+            inline=False,
+        )
+        embed.add_field(
+            name="🪫 Cache Miss",
+            value=f"{prompt_cache_miss_tokens:,}",
+            inline=False,
+        )
+        embed.add_field(name="🎯 缓存命中率", value=cache_hit_rate, inline=False)
         embed.add_field(name="🔢 呼叫次數", value=str(call_count), inline=False)
         embed.add_field(name="📊 平均每次", value=f"{average_per_call:,}", inline=False)
 

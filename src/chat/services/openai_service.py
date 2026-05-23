@@ -193,6 +193,57 @@ class OpenAIService:
         return image_context_list
 
     @staticmethod
+    def _build_chat_completions_payload(
+        *,
+        request_model_name: str,
+        openai_messages: List[Dict[str, Any]],
+        gen_config: Dict[str, Any],
+        is_custom_model: bool,
+        is_kimi_model: bool,
+        openai_tools: Optional[List[Dict[str, Any]]] = None,
+        kimi_builtin_tools: Optional[List[Dict[str, Any]]] = None,
+        proactive_tool_choice: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        构造稳定顺序的 Chat Completions 请求体。
+
+        目标是尽量把固定前缀（尤其是 tools schema）放到 messages 之前，
+        让支持前缀缓存的上游更容易命中稳定前缀。
+        """
+        payload: Dict[str, Any] = {
+            "model": request_model_name,
+        }
+
+        if is_kimi_model:
+            request_tools: List[Dict[str, Any]] = []
+            if openai_tools:
+                request_tools.extend(openai_tools)
+            if kimi_builtin_tools:
+                request_tools.extend(kimi_builtin_tools)
+            if request_tools:
+                payload["tools"] = request_tools
+        elif openai_tools:
+            payload["tools"] = openai_tools
+            if proactive_tool_choice:
+                payload["tool_choice"] = proactive_tool_choice
+            elif is_custom_model:
+                payload["tool_choice"] = "auto"
+
+            if is_custom_model:
+                payload["parallel_tool_calls"] = True
+
+        payload["messages"] = openai_messages
+        payload["stream"] = is_custom_model
+
+        if is_kimi_model:
+            payload["thinking"] = {"type": "disabled"}
+
+        payload["temperature"] = gen_config.get("temperature", 1.3)
+        payload["top_p"] = gen_config.get("top_p", 0.95)
+        payload["max_tokens"] = gen_config.get("max_output_tokens", 8192)
+        return payload
+
+    @staticmethod
     def _build_request_error_log_fields(e: httpx.RequestError) -> Dict[str, str]:
         return build_request_error_log_fields(e)
 
@@ -1439,15 +1490,6 @@ class OpenAIService:
                 else:
                     request_model_name = self.kimi_model_client.get_request_model_name()
 
-                payload = {
-                    "model": request_model_name,
-                    "messages": openai_messages,
-                    "stream": is_custom_model,
-                    "temperature": gen_config.get("temperature", 1.3),
-                    "top_p": gen_config.get("top_p", 0.95),
-                    "max_tokens": gen_config.get("max_output_tokens", 8192),
-                }
-
                 proactive_tool_choice = resolve_proactive_tool_choice(
                     message,
                     extract_function_tool_names(openai_tools),
@@ -1459,26 +1501,16 @@ class OpenAIService:
                         proactive_tool_choice["function"]["name"],
                     )
 
-                if is_kimi_model:
-                    payload["thinking"] = {"type": "disabled"}
-
-                if is_deepseek_model or is_custom_model:
-                    if openai_tools:
-                        payload["tools"] = openai_tools
-                        if proactive_tool_choice:
-                            payload["tool_choice"] = proactive_tool_choice
-                        elif is_custom_model:
-                            payload["tool_choice"] = "auto"
-                        if is_custom_model:
-                            payload["parallel_tool_calls"] = True
-                elif is_kimi_model:
-                    kimi_request_tools: List[Dict[str, Any]] = []
-                    if openai_tools:
-                        kimi_request_tools.extend(openai_tools)
-                    if kimi_builtin_tools:
-                        kimi_request_tools.extend(kimi_builtin_tools)
-                    if kimi_request_tools:
-                        payload["tools"] = kimi_request_tools
+                payload = self._build_chat_completions_payload(
+                    request_model_name=request_model_name,
+                    openai_messages=openai_messages,
+                    gen_config=gen_config,
+                    is_custom_model=is_custom_model,
+                    is_kimi_model=is_kimi_model,
+                    openai_tools=openai_tools,
+                    kimi_builtin_tools=kimi_builtin_tools,
+                    proactive_tool_choice=proactive_tool_choice,
+                )
 
                 if is_deepseek_model:
                     request_result = await self._send_with_network_retry_once(
@@ -1770,6 +1802,12 @@ class OpenAIService:
                             input_tokens = usage.get("prompt_tokens", 0)
                             output_tokens = usage.get("completion_tokens", 0)
                             total_tokens = usage.get("total_tokens", 0)
+                            prompt_cache_hit_tokens = usage.get(
+                                "prompt_cache_hit_tokens", 0
+                            )
+                            prompt_cache_miss_tokens = usage.get(
+                                "prompt_cache_miss_tokens", 0
+                            )
 
                             usage_date = datetime.now(ZoneInfo("Asia/Shanghai")).date()
                             async with AsyncSessionLocal() as session:
@@ -1783,6 +1821,8 @@ class OpenAIService:
                                         input_tokens,
                                         output_tokens,
                                         total_tokens,
+                                        prompt_cache_hit_tokens,
+                                        prompt_cache_miss_tokens,
                                     )
                                 else:
                                     await token_usage_service.create_token_usage(
@@ -1791,9 +1831,11 @@ class OpenAIService:
                                         input_tokens,
                                         output_tokens,
                                         total_tokens,
+                                        prompt_cache_hit_tokens,
+                                        prompt_cache_miss_tokens,
                                     )
                             log.info(
-                                f"[{channel_label}] Token 记录: In={input_tokens}, Out={output_tokens}, Total={total_tokens}"
+                                f"[{channel_label}] Token 记录: In={input_tokens}, Out={output_tokens}, Total={total_tokens}, CacheHit={prompt_cache_hit_tokens}, CacheMiss={prompt_cache_miss_tokens}"
                             )
                         except Exception as e:
                             log.error(f"[{channel_label}] Token 记录失败: {e}")
