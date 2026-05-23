@@ -17,6 +17,10 @@ jobs:
       started_at: ${{ steps.timing.outputs.started_at }}
 
     steps:
+      - name: Record workflow start time
+        id: timing
+        run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -45,10 +49,6 @@ jobs:
             type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
             type=sha,format=short,prefix=sha-
-
-      - name: Record workflow start time
-        id: timing
-        run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
 
       - name: Build and push Docker image
         id: build_push
