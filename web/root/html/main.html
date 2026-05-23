@@ -600,6 +600,19 @@ document.addEventListener('DOMContentLoaded', () => {
         botLoadMoreBtn.textContent = hasMore ? '加载更多' : '没有更多日志';
     };
 
+    const shiftBotHistoryFileAfterRotation = (fileName) => {
+        if (typeof fileName !== 'string' || !fileName.startsWith('bot.log.')) {
+            return null;
+        }
+
+        const suffix = Number.parseInt(fileName.slice('bot.log.'.length), 10);
+        if (Number.isNaN(suffix) || suffix < 1) {
+            return null;
+        }
+
+        return `bot.log.${suffix + 1}`;
+    };
+
     const buildBotLogSummaryText = (entryCount, visibleLineCount, isFilteredView = false) => {
         const fileText = botCurrentFile || '未加载';
         const loadedFilesText = botLoadedFileCount > 0 ? `${botLoadedFileCount} 个文件` : '0 个文件';
@@ -894,12 +907,22 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
             const incomingEntries = normalizeLogEntries(data.entries);
             const shouldReset = forceFull || !lastBotLogId || Boolean(data.reset_required);
+            const hadExistingEntries = fullBotLogEntries.length > 0;
+            const previousNextBeforeFile = botNextBeforeFile;
 
             if (shouldReset) {
-                fullBotLogEntries = incomingEntries;
                 botCurrentFile = typeof data.current_file === 'string' ? data.current_file : '';
-                botNextBeforeFile = typeof data.next_before === 'string' ? data.next_before : null;
-                botLoadedFileCount = botCurrentFile ? 1 : 0;
+                if (!forceFull && hadExistingEntries && Boolean(data.reset_required)) {
+                    if (incomingEntries.length) {
+                        fullBotLogEntries = [...fullBotLogEntries, ...incomingEntries];
+                    }
+                    botLoadedFileCount += 1;
+                    botNextBeforeFile = shiftBotHistoryFileAfterRotation(previousNextBeforeFile);
+                } else {
+                    fullBotLogEntries = incomingEntries;
+                    botNextBeforeFile = typeof data.next_before === 'string' ? data.next_before : null;
+                    botLoadedFileCount = botCurrentFile ? 1 : 0;
+                }
             } else if (incomingEntries.length) {
                 fullBotLogEntries = [...fullBotLogEntries, ...incomingEntries];
             }
