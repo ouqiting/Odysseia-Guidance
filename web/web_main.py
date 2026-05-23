@@ -37,7 +37,7 @@ web_app = FastAPI()
 web_app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 logger = logging.getLogger("webui")
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 logger.propagate = False
 
 multiline_token = os.getenv("WEBUI_ADMIN_TOKEN")
@@ -66,6 +66,7 @@ WEBUI_LOG_RESPONSE_LIMIT = int(os.getenv("WEBUI_SERVER_LOG_RESPONSE_LIMIT", "200
 WEBUI_LOG_BUFFER = deque(maxlen=WEBUI_LOG_TAIL_LINES)
 WEBUI_LOG_LAST_ID = 0
 KNOWN_LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+PERSISTED_LOG_LEVELS = {"INFO", "WARNING", "ERROR", "CRITICAL"}
 BOT_LOG_PATTERN = re.compile(
     r"^\[(?P<timestamp>[^\]]+)\] "
     r"\[(?P<level>[A-Z]+)\] "
@@ -88,6 +89,10 @@ BOT_LOG_STORE = BotLogStore(
 def normalize_log_level(value: Any) -> str:
     level = str(value or "UNKNOWN").upper()
     return level if level in KNOWN_LOG_LEVELS else "UNKNOWN"
+
+
+def should_persist_log_level(level: str) -> bool:
+    return level in PERSISTED_LOG_LEVELS
 
 
 def stringify_log_value(value: Any, default: str = "") -> str:
@@ -205,13 +210,17 @@ def build_structured_entry_from_record(
 
 def append_bot_log_entry(log_entry: Any):
     structured_entry = normalize_bot_log_entry(log_entry)
+    if not should_persist_log_level(structured_entry["level"]):
+        return None
     return BOT_LOG_STORE.append_entry(structured_entry)
 
 
 def append_webui_log_entry(log_entry: Any):
     global WEBUI_LOG_LAST_ID
-    WEBUI_LOG_LAST_ID += 1
     structured_entry = normalize_webui_log_entry(log_entry)
+    if not should_persist_log_level(structured_entry["level"]):
+        return None
+    WEBUI_LOG_LAST_ID += 1
     structured_entry["id"] = WEBUI_LOG_LAST_ID
     WEBUI_LOG_BUFFER.append(structured_entry)
 
@@ -277,7 +286,7 @@ class DequeLogHandler(logging.Handler):
 
 
 stream_handler = DequeLogHandler(WEBUI_LOG_BUFFER)
-stream_handler.setLevel(logging.DEBUG)
+stream_handler.setLevel(logging.INFO)
 stream_handler.setFormatter(
     logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 )

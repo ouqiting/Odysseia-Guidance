@@ -62,6 +62,17 @@ def _make_log_entry(index: int, message_size: int = 32) -> dict[str, str]:
     }
 
 
+def _make_debug_log_entry(index: int) -> dict[str, str]:
+    message = f"debug-{index}"
+    return {
+        "timestamp": f"2026-05-23T00:10:{index:02d}.000Z",
+        "level": "DEBUG",
+        "logger": "tests.bot",
+        "message": message,
+        "raw": f"[2026-05-23T00:10:{index:02d}.000Z] [DEBUG] [tests.bot] {message}",
+    }
+
+
 def test_get_logs_returns_latest_file_and_supports_history_loading(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -126,6 +137,25 @@ def test_get_logs_after_id_returns_only_new_entries_from_current_file(
     assert [entry["id"] for entry in incremental_payload["entries"]] == [3]
     assert incremental_payload["reset_required"] is False
     assert incremental_payload["current_file"] == "bot.log"
+
+
+def test_debug_entries_are_not_persisted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    module = _load_web_main_module(monkeypatch, tmp_path)
+    client = _authorized_client(module)
+
+    response = client.post(
+        "/api/log",
+        json={"entries": [_make_debug_log_entry(1), _make_log_entry(2)]},
+    )
+    assert response.status_code == 200
+
+    payload = client.get("/api/logs").json()
+    assert [entry["id"] for entry in payload["entries"]] == [1]
+    assert [entry["level"] for entry in payload["entries"]] == ["INFO"]
+    assert all("debug-1" not in entry["message"] for entry in payload["entries"])
 
 
 def test_log_store_recovers_last_id_after_reload(

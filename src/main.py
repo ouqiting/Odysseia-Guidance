@@ -214,7 +214,7 @@ def setup_logging():
     queue_handler = None
     if enable_webui:
         queue_handler = QueueHandler(log_queue)
-        queue_handler.setLevel(logging.DEBUG)
+        queue_handler.setLevel(logging.INFO)
         queue_handler.setFormatter(web_log_formatter)
 
     # 6. 为根 logger 添加所有处理器
