@@ -7,7 +7,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 import pytest
 
 from src.chat.features.pixiv.config import PixivConfig
-from src.chat.features.pixiv.image_sender import PixivMessageDeleteView, send_illust_to_channel
+from src.chat.features.pixiv.image_sender import (
+    PixivMessageDeleteView,
+    get_proxied_image_url,
+    send_illust_to_channel,
+)
 from src.chat.features.pixiv.models import PixivImageResult
 
 
@@ -43,6 +47,18 @@ def _config():
         refresh_interval_minutes=180,
         random_dedupe_days=7,
     )
+
+
+def test_get_proxied_image_url_rewrites_old_proxy_path_for_yuki():
+    config = _config()
+    config.image_proxy_host = "i.yuki.sh"
+
+    actual = get_proxied_image_url(
+        "https://i.pixiv.re/c/600x1200_90/img-master/img/2026/05/23/test_p0_master1200.jpg",
+        config,
+    )
+
+    assert actual == "https://i.yuki.sh/img-master/img/2026/05/23/test_p0_master1200.jpg"
 
 
 @pytest.mark.asyncio

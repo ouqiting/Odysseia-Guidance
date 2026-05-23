@@ -3,7 +3,7 @@
 import io
 import logging
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 import aiohttp
 import discord
@@ -12,6 +12,24 @@ from .config import PixivConfig
 from .models import PixivImageResult
 
 log = logging.getLogger(__name__)
+
+
+def _strip_proxy_resize_prefix(path: str) -> str:
+    if not path.startswith("/c/"):
+        return path
+
+    parts = path.split("/", 4)
+    if len(parts) < 5:
+        return path
+
+    _, resized_prefix, resized_value, resized_target, remainder = parts
+    if (
+        resized_prefix != "c"
+        or not resized_value
+        or not resized_target.startswith("img-")
+    ):
+        return path
+    return f"/{resized_target}/{remainder}"
 
 
 class PixivMessageDeleteView(discord.ui.View):
@@ -52,9 +70,18 @@ def get_proxied_image_url(original_url: str, config: PixivConfig) -> str:
         return original_url
     if not config.use_image_proxy:
         return original_url
-    if "i.pximg.net" in original_url:
-        return original_url.replace("i.pximg.net", config.image_proxy_host)
-    return original_url
+
+    parsed = urlparse(original_url)
+    host = (parsed.netloc or "").lower()
+    target_host = str(config.image_proxy_host or "").strip()
+    if host not in {"i.pximg.net", "i.pixiv.re"} or not target_host:
+        return original_url
+
+    path = parsed.path
+    if target_host.lower() == "i.yuki.sh":
+        path = _strip_proxy_resize_prefix(path)
+
+    return urlunparse(parsed._replace(netloc=target_host, path=path))
 
 
 def extract_best_image_url(illust) -> str:

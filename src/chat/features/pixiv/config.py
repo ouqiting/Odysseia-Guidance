@@ -52,7 +52,7 @@ class PixivConfig:
             proxy=str(os.getenv("PIXIV_PROXY", "") or "").strip(),
             api_proxy_host=str(os.getenv("PIXIV_API_PROXY_HOST", "") or "").strip(),
             image_proxy_host=str(
-                os.getenv("PIXIV_IMAGE_PROXY_HOST", "i.pixiv.re") or "i.pixiv.re"
+                os.getenv("PIXIV_IMAGE_PROXY_HOST", "i.yuki.sh") or "i.yuki.sh"
             ).strip(),
             use_image_proxy=_parse_bool(os.getenv("PIXIV_USE_IMAGE_PROXY"), True),
             default_mode=default_mode,

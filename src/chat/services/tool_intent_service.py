@@ -7,18 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 log = logging.getLogger(__name__)
 
 _PROACTIVE_TOOL_CHOICE_RULES: Tuple[Tuple[re.Pattern[str], str], ...] = (
-    (
-        re.compile(r"(上网搜一下|联网|上网|本子|查一下|链接|网站|网址|下载地址)"),
-        "search_web",
-    ),
-    (
-        re.compile(r"(活字印刷|倒放活字印刷|otto)"),
-        "otto_tool",
-    ),
-    (
-        re.compile(r"占卜"),
-        "tarot_reading",
-    ),
+    
 )
 
 
