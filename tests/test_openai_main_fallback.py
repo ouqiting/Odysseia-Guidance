@@ -32,12 +32,12 @@ async def test_main_reply_uses_next_channel_after_same_day_failure(
     fallback_states = [
         OpenAIFallbackState(
             date="2026-05-18",
-            order=["custom", "deepseek-chat", "kimi-k2.5"],
+            order=["custom", "deepseek-v4-flash", "kimi-k2.5"],
             failed_channels=[],
         ),
         OpenAIFallbackState(
             date="2026-05-18",
-            order=["custom", "deepseek-chat", "kimi-k2.5"],
+            order=["custom", "deepseek-v4-flash", "kimi-k2.5"],
             failed_channels=["custom"],
         ),
     ]
@@ -48,7 +48,7 @@ async def test_main_reply_uses_next_channel_after_same_day_failure(
     mark_channel_failed = AsyncMock(
         return_value=OpenAIFallbackState(
             date="2026-05-18",
-            order=["custom", "deepseek-chat", "kimi-k2.5"],
+            order=["custom", "deepseek-v4-flash", "kimi-k2.5"],
             failed_channels=["custom"],
         )
     )
@@ -61,14 +61,14 @@ async def test_main_reply_uses_next_channel_after_same_day_failure(
                 should_lock_channel=True,
             ),
             OpenAIChannelExecutionResult(
-                channel_name="deepseek-chat",
+                channel_name="deepseek-v4-flash",
                 response_text="fallback ok",
-                used_model_name="deepseek-chat",
+                used_model_name="deepseek-v4-flash",
             ),
             OpenAIChannelExecutionResult(
-                channel_name="deepseek-chat",
+                channel_name="deepseek-v4-flash",
                 response_text="second request ok",
-                used_model_name="deepseek-chat",
+                used_model_name="deepseek-v4-flash",
             ),
         ]
     )
@@ -119,8 +119,8 @@ async def test_main_reply_uses_next_channel_after_same_day_failure(
         call.kwargs["model_name"] for call in execute_channel_response.await_args_list
     ] == [
         "custom",
-        "deepseek-chat",
-        "deepseek-chat",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash",
     ]
     mark_channel_failed.assert_awaited_once_with(
         primary_model="custom",
@@ -128,7 +128,7 @@ async def test_main_reply_uses_next_channel_after_same_day_failure(
     )
     notify_alert.assert_awaited_once()
     assert "失败渠道: custom" in notify_alert.await_args.args[0]
-    assert "下一渠道: deepseek-chat" in notify_alert.await_args.args[0]
+    assert "下一渠道: deepseek-v4-flash" in notify_alert.await_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -140,7 +140,7 @@ async def test_main_reply_continues_to_third_channel_after_unexpected_exception(
 
     fallback_state = OpenAIFallbackState(
         date="2026-05-20",
-        order=["custom", "kimi-k2.5", "deepseek-chat"],
+        order=["custom", "kimi-k2.5", "deepseek-v4-flash"],
         failed_channels=[],
     )
 
@@ -158,9 +158,9 @@ async def test_main_reply_continues_to_third_channel_after_unexpected_exception(
             ),
             RuntimeError("kimi exploded unexpectedly"),
             OpenAIChannelExecutionResult(
-                channel_name="deepseek-chat",
+                channel_name="deepseek-v4-flash",
                 response_text="third channel ok",
-                used_model_name="deepseek-chat",
+                used_model_name="deepseek-v4-flash",
             ),
         ]
     )
@@ -201,7 +201,7 @@ async def test_main_reply_continues_to_third_channel_after_unexpected_exception(
     assert result == "third channel ok"
     assert [
         call.kwargs["model_name"] for call in execute_channel_response.await_args_list
-    ] == ["custom", "kimi-k2.5", "deepseek-chat"]
+    ] == ["custom", "kimi-k2.5", "deepseek-v4-flash"]
     assert mark_channel_failed.await_count == 2
 
 
@@ -214,7 +214,7 @@ async def test_main_reply_does_not_fallback_on_non_locking_channel_error(
 
     fallback_state = OpenAIFallbackState(
         date="2026-05-23",
-        order=["custom", "kimi-k2.5", "deepseek-chat"],
+        order=["custom", "kimi-k2.5", "deepseek-v4-flash"],
         failed_channels=[],
     )
 

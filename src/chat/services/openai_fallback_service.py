@@ -11,7 +11,7 @@ log = logging.getLogger(__name__)
 OPENAI_FALLBACK_SECONDARY_MODEL_KEY = "openai_fallback_secondary_model"
 OPENAI_FALLBACK_TERTIARY_MODEL_KEY = "openai_fallback_tertiary_model"
 SUPPORTED_OPENAI_FALLBACK_MODELS = (
-    "deepseek-chat",
+    "deepseek-v4-flash",
     "deepseek-v4-pro",
     "kimi-k2.5",
     "custom",

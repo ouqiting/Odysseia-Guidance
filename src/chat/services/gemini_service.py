@@ -47,7 +47,7 @@ from src.chat.services.openai_service import (
 log = logging.getLogger(__name__)
 
 OPENAI_COMPATIBLE_MODELS = {
-    "deepseek-chat",
+    "deepseek-v4-flash",
     "deepseek-v4-pro",
     "kimi-k2.5",
     "custom",
@@ -741,7 +741,7 @@ class GeminiService:
             )
 
         # --- OpenAI 兼容专用路由（DeepSeek / Kimi） ---
-        if model_name in ["deepseek-chat", "deepseek-v4-pro", "kimi-k2.5", "custom"]:
+        if model_name in ["deepseek-v4-flash", "deepseek-v4-pro", "kimi-k2.5", "custom"]:
             log.info(f"检测到 {model_name} 模型，切换至 OpenAIService。")
             fallback_state = await openai_fallback_service.get_daily_state(model_name)
             if not fallback_state.order:
