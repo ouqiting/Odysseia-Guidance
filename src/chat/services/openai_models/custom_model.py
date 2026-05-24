@@ -313,6 +313,35 @@ class CustomModelClient:
         self.api_key = active_key
         return active_key, active_index, len(keys)
 
+    def _get_request_api_key_snapshot(
+        self,
+        runtime_config: Dict[str, Any],
+        *,
+        excluded_api_keys: Optional[set[str]] = None,
+    ) -> Tuple[str, int, int]:
+        keys = self._sync_api_key_state(
+            list(runtime_config.get("api_keys") or []),
+            raw_api_key_source=runtime_config.get("api_key_source_value"),
+            source_type=runtime_config.get("api_key_source_type"),
+            file_path=runtime_config.get("api_key_file_path"),
+        )
+        if not keys:
+            return "", 0, 0
+
+        excluded = {key for key in (excluded_api_keys or set()) if key}
+        for index, key in enumerate(keys):
+            if key in excluded:
+                continue
+            self.api_key = key
+            return key, index, len(keys)
+
+        return "", 0, len(keys)
+
+    @staticmethod
+    def _is_rate_limited_error(status_code: int, combined_error_text: str) -> bool:
+        lowered_error_text = str(combined_error_text or "").lower()
+        return status_code == 429 or "429 too many requests" in lowered_error_text
+
     async def _rotate_to_next_api_key(
         self,
         *,
@@ -334,23 +363,30 @@ class CustomModelClient:
                     should_retry=False,
                 )
 
-            active_index = min(
-                max(self._active_api_key_index, 0), len(self._api_keys) - 1
-            )
-            active_key = self._api_keys[active_index]
+            current_keys = list(self._api_keys)
+            matched_index = -1
+            if 0 <= failed_index < len(current_keys):
+                if current_keys[failed_index] == failed_api_key:
+                    matched_index = failed_index
+            if matched_index < 0 and failed_api_key in current_keys:
+                matched_index = current_keys.index(failed_api_key)
 
-            if active_key == failed_api_key and active_index == failed_index:
+            active_index = min(
+                max(self._active_api_key_index, 0), len(current_keys) - 1
+            )
+            active_key = current_keys[active_index]
+
+            if matched_index >= 0:
                 source_type = str(
                     (runtime_config or {}).get("api_key_source_type")
                     or self._api_key_source_type
                 ).lower()
-                current_keys = list(self._api_keys)
                 next_rotation_count = rotation_count + 1
 
                 if failure_label == "403 Forbidden":
                     updated_keys = list(current_keys)
-                    deleted_key = updated_keys.pop(active_index)
-                    next_index = min(active_index, max(len(updated_keys) - 1, 0))
+                    deleted_key = updated_keys.pop(matched_index)
+                    next_index = min(matched_index, max(len(updated_keys) - 1, 0))
                     serialized_api_keys = self._apply_api_key_state(
                         updated_keys,
                         active_index=next_index,
@@ -415,10 +451,10 @@ class CustomModelClient:
                     )
 
                 reordered_keys = list(current_keys)
-                failed_key = reordered_keys.pop(active_index)
+                failed_key = reordered_keys.pop(matched_index)
                 reordered_keys.append(failed_key)
                 next_index = (
-                    active_index if active_index < len(reordered_keys) - 1 else 0
+                    matched_index if matched_index < len(reordered_keys) - 1 else 0
                 )
                 serialized_api_keys = self._apply_api_key_state(
                     reordered_keys,
@@ -1757,7 +1793,7 @@ class CustomModelClient:
             runtime_config = self.refresh_from_env()
 
         api_url = (override_base_url or runtime_config["base_url"] or "").rstrip("/")
-        api_key, _, total_api_keys = self._get_active_api_key_snapshot(runtime_config)
+        api_key, _, total_api_keys = self._get_request_api_key_snapshot(runtime_config)
 
         if not api_url:
             raise ValueError("OpenAI 兼容通道 URL 配置缺失，请检查配置。")
@@ -1954,12 +1990,21 @@ class CustomModelClient:
         api_key_source_type = str(
             runtime_config.get("api_key_source_type") or self._api_key_source_type or ""
         ).strip().lower() or "inline"
+        temporarily_rate_limited_api_keys: set[str] = set()
         loop = asyncio.get_running_loop()
 
         for attempt in range(max_key_attempts):
-            api_key, api_key_index, total_api_keys = self._get_active_api_key_snapshot(
-                runtime_config
+            api_key, api_key_index, total_api_keys = self._get_request_api_key_snapshot(
+                runtime_config,
+                excluded_api_keys=temporarily_rate_limited_api_keys,
             )
+            if not api_key:
+                raise CustomModelChannelError(
+                    "custom 通道的所有 API Key 在本次请求中均触发 429，当前渠道暂不可用。",
+                    failure_kind="custom_all_keys_rate_limited",
+                    api_key_rotation_count=api_key_rotation_count,
+                    total_api_keys=initial_total_api_keys,
+                )
             headers["Authorization"] = f"Bearer {api_key}"
             request_started_at = loop.time()
             stream_phase = "awaiting_response_headers"
@@ -1998,6 +2043,38 @@ class CustomModelClient:
                         if response_text:
                             combined_error_text = (
                                 f"{combined_error_text} | {response_text}"
+                            )
+
+                        if (
+                            self._is_rate_limited_error(
+                                current_response.status_code,
+                                combined_error_text,
+                            )
+                            and initial_total_api_keys > 1
+                        ):
+                            temporarily_rate_limited_api_keys.add(api_key)
+                            api_key_rotation_count += 1
+                            all_keys_exhausted = (
+                                len(temporarily_rate_limited_api_keys)
+                                >= initial_total_api_keys
+                            )
+                            log.warning(
+                                "[Custom] Key ...%s hit 429 Too Many Requests, temporarily skipped for this request only | handled_keys=%s/%s | reason=%s",
+                                self._mask_key_tail(api_key),
+                                api_key_rotation_count,
+                                initial_total_api_keys,
+                                combined_error_text[:1000],
+                            )
+                            if (
+                                not all_keys_exhausted
+                                and attempt < max_key_attempts - 1
+                            ):
+                                continue
+                            raise CustomModelChannelError(
+                                "custom 通道的所有 API Key 在本次请求中均触发 429，当前渠道暂不可用。",
+                                failure_kind="custom_all_keys_rate_limited",
+                                api_key_rotation_count=api_key_rotation_count,
+                                total_api_keys=initial_total_api_keys,
                             )
 
                         api_key_rotation_error_label = (

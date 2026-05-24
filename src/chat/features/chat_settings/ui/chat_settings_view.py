@@ -36,6 +36,7 @@ from src.chat.features.chat_settings.ui.ai_reply_regex_settings_view import (
     AIReplyRegexSettingsView,
 )
 from src.chat.features.chat_settings.ui.log_settings_view import LogSettingsView
+from src.chat.services.openai_fallback_service import openai_fallback_service
 
 _GLOBAL_TTS_MODE_KEY = "global_tts_mode"
 _TTS_MODE_LEGACY = "legacy"  # tts_tool (edge_tts)
@@ -306,6 +307,14 @@ class ChatSettingsView(View):
                 row=4,
             )
         )
+        self.add_item(
+            Button(
+                label="重置回退",
+                style=ButtonStyle.secondary,
+                custom_id="reset_openai_fallback",
+                row=4,
+            )
+        )
 
     async def _update_view(self, interaction: Interaction):
         """通过编辑附加的消息来刷新视图。"""
@@ -345,6 +354,8 @@ class ChatSettingsView(View):
             await self.on_regex_settings(interaction)
         elif custom_id == "log_settings":
             await self.on_log_settings(interaction)
+        elif custom_id == "reset_openai_fallback":
+            await self.on_reset_openai_fallback(interaction)
 
         return True
 
@@ -383,6 +394,29 @@ class ChatSettingsView(View):
         await interaction.response.send_message(
             content=view.render_content(),
             view=view,
+            ephemeral=True,
+        )
+
+    async def on_reset_openai_fallback(self, interaction: Interaction):
+        current_model = await self.service.get_current_ai_model()
+        if not openai_fallback_service.is_supported_model(current_model):
+            await interaction.response.send_message(
+                f"当前模型 `{current_model}` 未启用 OpenAI 回退渠道，无需重置。",
+                ephemeral=True,
+            )
+            return
+
+        reset_state = await openai_fallback_service.reset_state_for_current_order(
+            current_model
+        )
+        order_text = " -> ".join(reset_state.order) if reset_state.order else "未配置"
+        await interaction.response.send_message(
+            (
+                "✅ 已重置当天的 OpenAI 回退状态。\n"
+                f"- 主模型: `{current_model}`\n"
+                f"- 重置后顺序: `{order_text}`\n"
+                "- 下一次请求会重新从第一个渠道开始尝试。"
+            ),
             ephemeral=True,
         )
 
