@@ -52,6 +52,23 @@ OPENAI_COMPATIBLE_MODELS = {
     "kimi-k2.5",
     "custom",
 }
+DEFAULT_OFFICIAL_KEY_ACQUIRE_TIMEOUT_SECONDS = max(
+    float(os.getenv("GEMINI_OFFICIAL_KEY_ACQUIRE_TIMEOUT_SECONDS", "20")),
+    1.0,
+)
+DEFAULT_EMBEDDING_KEY_ACQUIRE_TIMEOUT_SECONDS = max(
+    float(os.getenv("GEMINI_EMBEDDING_KEY_ACQUIRE_TIMEOUT_SECONDS", "10")),
+    1.0,
+)
+DEFAULT_EMBEDDING_TOTAL_TIMEOUT_SECONDS = max(
+    float(
+        os.getenv(
+            "GEMINI_EMBEDDING_TOTAL_TIMEOUT_SECONDS",
+            str(max(app_config.EMBEDDING_API_TIMEOUT_MS / 1000 + 2.0, 10.0)),
+        )
+    ),
+    1.0,
+)
 
 # --- 设置专门用于记录无效 API 密钥的 logger ---
 # 确保 data 目录存在
@@ -154,7 +171,16 @@ def _api_key_handler(func: Callable) -> Callable:
                 else:
                     # 【通道 B：向量】走官方直连 (或者是聊天回退)
                     # 从轮换服务获取官方 Key
-                    key_obj = await self.key_rotation_service.acquire_key()
+                    if not self.key_rotation_service:
+                        raise NoAvailableKeyError("未配置 GOOGLE_API_KEYS_LIST。")
+                    key_wait_timeout_seconds = (
+                        self.embedding_key_acquire_timeout_seconds
+                        if is_embedding_task
+                        else self.official_key_acquire_timeout_seconds
+                    )
+                    key_obj = await self.key_rotation_service.acquire_key_with_timeout(
+                        wait_timeout_seconds=key_wait_timeout_seconds
+                    )
                     http_options_kwargs = {}
                     if is_embedding_task:
                         http_options_kwargs["timeout"] = (
@@ -237,6 +263,23 @@ def _api_key_handler(func: Callable) -> Callable:
                             f"{func.__name__} 被取消，已释放 official key 避免后续请求卡死"
                         )
                         raise
+                    except asyncio.TimeoutError as e:
+                        log.warning(
+                            "%s 调用超时，当前 official key 将进入冷却并尝试切换下一把。error=%s",
+                            func.__name__,
+                            e,
+                            exc_info=True,
+                        )
+                        if use_custom_channel:
+                            if func.__name__ == "generate_embedding":
+                                return None
+                            return "服务响应超时，请稍后再试。"
+                        key_should_be_cooled_down = True
+                        failure_penalty = 25
+                        if attempt < max_attempts - 1:
+                            await asyncio.sleep(1)
+                            continue
+                        break
 
                     except (genai_errors.ClientError, genai_errors.ServerError) as e:
                         error_str = str(e)
@@ -287,8 +330,8 @@ def _api_key_handler(func: Callable) -> Callable:
                         # 自定义通道冷却：简单休眠一下
                         await asyncio.sleep(2)
 
-            except NoAvailableKeyError:
-                log.error("所有官方 API 密钥均不可用。")
+            except NoAvailableKeyError as e:
+                log.error("所有官方 API 密钥均不可用。detail=%s", e)
                 if func.__name__ == "generate_embedding":
                     return None
                 return "啊啊啊服务器要爆炸啦！现在有点忙不过来，你过一会儿再来找我玩吧！<生气>"
@@ -367,6 +410,15 @@ class GeminiService:
         else:
             self.key_rotation_service = None
             log.warning("未配置 GOOGLE_API_KEYS_LIST，RAG检索功能将被禁用。")
+        self.official_key_acquire_timeout_seconds = (
+            DEFAULT_OFFICIAL_KEY_ACQUIRE_TIMEOUT_SECONDS
+        )
+        self.embedding_key_acquire_timeout_seconds = (
+            DEFAULT_EMBEDDING_KEY_ACQUIRE_TIMEOUT_SECONDS
+        )
+        self.embedding_total_timeout_seconds = (
+            DEFAULT_EMBEDDING_TOTAL_TIMEOUT_SECONDS
+        )
 
         self.default_model_name = app_config.GEMINI_MODEL
         self.executor = ThreadPoolExecutor(
@@ -1857,10 +1909,13 @@ class GeminiService:
         if title and task_type == "retrieval_document":
             embed_config.title = title
 
-        embedding_result = await client.aio.models.embed_content(
-            model="gemini-embedding-001",
-            contents=[types.Part(text=text)],
-            config=embed_config,
+        embedding_result = await asyncio.wait_for(
+            client.aio.models.embed_content(
+                model="gemini-embedding-001",
+                contents=[types.Part(text=text)],
+                config=embed_config,
+            ),
+            timeout=self.embedding_total_timeout_seconds,
         )
 
         if embedding_result and embedding_result.embeddings:

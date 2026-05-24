@@ -15,6 +15,7 @@ from src.chat.features.tools.services.user_tool_settings_service import (
 log = logging.getLogger(__name__)
 
 _DUPLICATE_TOOL_CALL_MESSAGE = "你已调用过这个工具了，请根据结果生成回复"
+_TOOL_EXECUTION_TIMEOUT_SECONDS = 40.0
 
 
 class ToolService:
@@ -324,7 +325,10 @@ class ToolService:
                 tool_args["user_id"] = user_id_str
 
             # 步骤 5: 执行工具函数
-            result = await tool_function(**tool_args)
+            result = await asyncio.wait_for(
+                tool_function(**tool_args),
+                timeout=_TOOL_EXECUTION_TIMEOUT_SECONDS,
+            )
             await self._remember_completed_tool_call(
                 scope_key, tool_name, tool_signature, succeeded=True
             )
@@ -358,6 +362,24 @@ class ToolService:
                     log.info(f"已为 '{tool_name}' 构造标准的 FunctionResponse Part。")
                 return part
 
+        except asyncio.TimeoutError:
+            log.error(
+                "执行工具 '%s' 超时，已在 %.1f 秒后中断。",
+                tool_name,
+                _TOOL_EXECUTION_TIMEOUT_SECONDS,
+            )
+            await self._remember_completed_tool_call(
+                scope_key, tool_name, tool_signature, succeeded=False
+            )
+            return types.Part.from_function_response(
+                name=tool_name,
+                response={
+                    "error": (
+                        "Tool execution timed out after "
+                        f"{_TOOL_EXECUTION_TIMEOUT_SECONDS:.0f} seconds."
+                    )
+                },
+            )
         except Exception as e:
             log.error(f"执行工具 '{tool_name}' 时发生意外错误。", exc_info=True)
             await self._remember_completed_tool_call(

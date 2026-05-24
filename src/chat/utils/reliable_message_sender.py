@@ -1,7 +1,9 @@
 import asyncio
 import logging
+import os
+import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, Optional
 
 import discord
@@ -11,7 +13,20 @@ from src.chat.services.reply_recovery_manager import reply_recovery_manager
 log = logging.getLogger(__name__)
 
 VERIFY_DELAY_SECONDS = 2.0
+MAX_RETRY_CYCLES = max(
+    int(os.getenv("PENDING_TEXT_DELIVERY_MAX_RETRY_CYCLES", "12")),
+    1,
+)
+MAX_QUEUE_AGE_SECONDS = max(
+    float(os.getenv("PENDING_TEXT_DELIVERY_MAX_AGE_SECONDS", "1800")),
+    60.0,
+)
+DEAD_LETTER_LIMIT = max(
+    int(os.getenv("PENDING_TEXT_DELIVERY_DEAD_LETTER_LIMIT", "100")),
+    1,
+)
 _QUEUE_ATTR = "_pending_text_deliveries"
+_DEAD_LETTER_ATTR = "_pending_text_delivery_dead_letters"
 _QUEUE_LOCK_ATTR = "_pending_text_deliveries_lock"
 _FLUSH_LOCK_ATTR = "_pending_text_deliveries_flush_lock"
 _FLUSH_TASK_ATTR = "_pending_text_deliveries_flush_task"
@@ -35,11 +50,14 @@ class PendingTextDelivery:
     attempt_count: int = 0
     retry_cycle_count: int = 0
     last_error: Optional[str] = None
+    created_monotonic: float = field(default_factory=time.monotonic)
 
 
 def initialize_reliable_delivery_state(bot: discord.Client) -> None:
     if not hasattr(bot, _QUEUE_ATTR):
         setattr(bot, _QUEUE_ATTR, [])
+    if not hasattr(bot, _DEAD_LETTER_ATTR):
+        setattr(bot, _DEAD_LETTER_ATTR, [])
     if not hasattr(bot, _QUEUE_LOCK_ATTR):
         setattr(bot, _QUEUE_LOCK_ATTR, asyncio.Lock())
     if not hasattr(bot, _FLUSH_LOCK_ATTR):
@@ -53,6 +71,11 @@ def initialize_reliable_delivery_state(bot: discord.Client) -> None:
 def _get_queue(bot: discord.Client) -> list[PendingTextDelivery]:
     initialize_reliable_delivery_state(bot)
     return getattr(bot, _QUEUE_ATTR)
+
+
+def _get_dead_letters(bot: discord.Client) -> list[dict]:
+    initialize_reliable_delivery_state(bot)
+    return getattr(bot, _DEAD_LETTER_ATTR)
 
 
 def _get_queue_lock(bot: discord.Client) -> asyncio.Lock:
@@ -84,6 +107,21 @@ def _get_retry_delay_seconds(delivery: PendingTextDelivery) -> float:
     if delivery.retry_cycle_count < 3:
         return 5.0
     return 10.0
+
+
+def _get_delivery_drop_reason(delivery: PendingTextDelivery) -> Optional[str]:
+    age_seconds = max(time.monotonic() - delivery.created_monotonic, 0.0)
+    if delivery.retry_cycle_count >= MAX_RETRY_CYCLES:
+        return (
+            "max_retry_cycles_exceeded:"
+            f"{delivery.retry_cycle_count}>={MAX_RETRY_CYCLES}"
+        )
+    if age_seconds >= MAX_QUEUE_AGE_SECONDS:
+        return (
+            "max_queue_age_exceeded:"
+            f"{age_seconds:.1f}s>={MAX_QUEUE_AGE_SECONDS:.1f}s"
+        )
+    return None
 
 
 def _is_transient_send_error(exc: Exception) -> bool:
@@ -344,9 +382,56 @@ async def _requeue_pending_delivery(
     bot: discord.Client, delivery: PendingTextDelivery
 ) -> None:
     delivery.retry_cycle_count += 1
+    drop_reason = _get_delivery_drop_reason(delivery)
+    if drop_reason is not None:
+        await _drop_pending_delivery(bot, delivery, reason=drop_reason)
+        return
     queue_lock = _get_queue_lock(bot)
     async with queue_lock:
         _get_queue(bot).append(delivery)
+
+
+async def _drop_pending_delivery(
+    bot: discord.Client,
+    delivery: PendingTextDelivery,
+    *,
+    reason: str,
+) -> None:
+    age_seconds = max(time.monotonic() - delivery.created_monotonic, 0.0)
+    dead_letters = _get_dead_letters(bot)
+    dead_letters.append(
+        {
+            "channel_id": delivery.channel_id,
+            "reply_to_message_id": delivery.reply_to_message_id,
+            "task_id": delivery.task_id,
+            "chunk_index": delivery.chunk_index,
+            "chunk_total": delivery.chunk_total,
+            "attempt_count": delivery.attempt_count,
+            "retry_cycle_count": delivery.retry_cycle_count,
+            "age_seconds": age_seconds,
+            "last_error": delivery.last_error,
+            "reason": reason,
+        }
+    )
+    if len(dead_letters) > DEAD_LETTER_LIMIT:
+        del dead_letters[:-DEAD_LETTER_LIMIT]
+
+    if delivery.task_id is not None:
+        await reply_recovery_manager.drop_task(
+            delivery.task_id,
+            reason=f"pending_delivery_dropped:{reason}",
+        )
+
+    log.error(
+        "待补发频道回复已转入死信并停止重试 | channel_id=%s | reply_to=%s | task_id=%s | retry_cycle=%s | age=%.1fs | reason=%s | last_error=%s",
+        delivery.channel_id,
+        delivery.reply_to_message_id,
+        delivery.task_id,
+        delivery.retry_cycle_count,
+        age_seconds,
+        reason,
+        delivery.last_error,
+    )
 
 
 async def send_text_reply_with_recovery(
@@ -440,6 +525,11 @@ async def flush_pending_text_deliveries(bot: discord.Client) -> None:
                     return
                 delivery = queue.pop(0)
 
+            drop_reason = _get_delivery_drop_reason(delivery)
+            if drop_reason is not None:
+                await _drop_pending_delivery(bot, delivery, reason=drop_reason)
+                continue
+
             try:
                 if delivery.sent_message_id is not None:
                     if not await reply_recovery_manager.is_attempt_current(
@@ -506,6 +596,11 @@ async def flush_pending_text_deliveries(bot: discord.Client) -> None:
                     delivery.reply_to_message_id,
                     exc,
                     exc_info=True,
+                )
+                await _drop_pending_delivery(
+                    bot,
+                    delivery,
+                    reason=f"permanent_send_error:{type(exc).__name__}",
                 )
 
 

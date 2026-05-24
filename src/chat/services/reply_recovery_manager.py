@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -9,6 +10,7 @@ from typing import Any, Literal, Optional
 import discord
 
 log = logging.getLogger(__name__)
+MAX_TERMINAL_TASKS = max(int(os.getenv("REPLY_RECOVERY_MAX_TERMINAL_TASKS", "2000")), 1)
 
 TaskState = Literal[
     "registered",
@@ -64,6 +66,25 @@ class ReplyRecoveryManager:
         flags.setdefault("personal_memory", False)
         return flags
 
+    @staticmethod
+    def _is_terminal_state(task_state: TaskState) -> bool:
+        return task_state in {"completed", "dropped"}
+
+    def _prune_terminal_tasks_locked(self) -> None:
+        terminal_task_ids = [
+            task_id
+            for task_id, task in self._tasks.items()
+            if self._is_terminal_state(task.task_state)
+        ]
+        overflow_count = len(terminal_task_ids) - MAX_TERMINAL_TASKS
+        if overflow_count <= 0:
+            return
+
+        for task_id in terminal_task_ids[-overflow_count:]:
+            self._tasks.pop(task_id, None)
+            self._side_effect_payloads.pop(task_id, None)
+            self._resume_task_refs.pop(task_id, None)
+
     async def clear_for_tests(self) -> None:
         async with self._lock:
             self._tasks.clear()
@@ -105,6 +126,7 @@ class ReplyRecoveryManager:
 
             self._tasks[message.id] = task
             self._tasks.move_to_end(message.id, last=False)
+            self._prune_terminal_tasks_locked()
 
         return message.id
 
@@ -269,6 +291,7 @@ class ReplyRecoveryManager:
             task.last_drop_reason = reason
             task.updated_at = self._now_iso()
             self._side_effect_payloads.pop(task_id, None)
+            self._prune_terminal_tasks_locked()
 
     async def _apply_side_effects(self, task_id: int) -> None:
         snapshot = await self.get_task_snapshot(task_id)
@@ -320,6 +343,16 @@ class ReplyRecoveryManager:
                 log.error("执行个人记忆副作用失败 | task_id=%s | error=%s", task_id, exc, exc_info=True)
             else:
                 await self.mark_side_effect_applied(task_id, "personal_memory")
+
+        async with self._lock:
+            task = self._tasks.get(task_id)
+            if task is None:
+                return
+
+            task.side_effect_flags = self._ensure_side_effect_flags(task.side_effect_flags)
+            if task.task_state == "completed" and all(task.side_effect_flags.values()):
+                self._side_effect_payloads.pop(task_id, None)
+            self._prune_terminal_tasks_locked()
 
     async def _get_resume_candidates(self) -> list[ReplyRecoveryTask]:
         async with self._lock:

@@ -102,6 +102,70 @@ class KeyRotationService:
 
         会一直等待直到有可用的Key为止。
         """
+        return await self.acquire_key_with_timeout()
+
+    def _build_no_available_key_reason_locked(self, now: float) -> str:
+        total_count = len(self.keys)
+        available_count = 0
+        cooling_count = 0
+        disabled_count = 0
+        earliest_recovery_seconds = None
+
+        for key_obj in self.keys.values():
+            if key_obj.status == KeyStatus.AVAILABLE:
+                available_count += 1
+                continue
+
+            if key_obj.status == KeyStatus.DISABLED:
+                disabled_count += 1
+                continue
+
+            if key_obj.status == KeyStatus.COOLING_DOWN:
+                cooling_count += 1
+                remaining_seconds = max(key_obj.cooldown_until - now, 0.0)
+                if (
+                    earliest_recovery_seconds is None
+                    or remaining_seconds < earliest_recovery_seconds
+                ):
+                    earliest_recovery_seconds = remaining_seconds
+                continue
+
+        status_summary = (
+            f"available={available_count}/{total_count}, "
+            f"cooling={cooling_count}, disabled={disabled_count}"
+        )
+        if earliest_recovery_seconds is not None:
+            return (
+                "当前无可用 Gemini API Key，"
+                f"{status_summary}，最早约 {earliest_recovery_seconds:.1f} 秒后恢复。"
+            )
+
+        if disabled_count >= total_count:
+            return (
+                "当前无可用 Gemini API Key，"
+                f"{status_summary}，所有 Key 都已被禁用。"
+            )
+
+        return f"当前无可用 Gemini API Key，{status_summary}。"
+
+    async def acquire_key_with_timeout(
+        self,
+        *,
+        wait_timeout_seconds: float = 15.0,
+        poll_interval_seconds: float = 1.0,
+    ) -> ApiKey:
+        """
+        在限定时间内获取一个可用的 API Key。
+
+        当所有 Key 都在冷却或已被禁用时，不再无限等待，而是在超时后抛出
+        NoAvailableKeyError，让上游可以执行降级、熔断或渠道切换。
+        """
+        if wait_timeout_seconds <= 0:
+            raise ValueError("wait_timeout_seconds 必须大于 0。")
+
+        sleep_interval = max(poll_interval_seconds, 0.1)
+        deadline_monotonic = time.monotonic() + wait_timeout_seconds
+
         while True:
             async with self.lock:
                 now = time.time()
@@ -130,9 +194,23 @@ class KeyRotationService:
                     log.info(f"获取到密钥: ...{best_key.key[-4:]}")
                     return best_key
 
+                reason = self._build_no_available_key_reason_locked(now)
+                disabled_count = sum(
+                    1
+                    for key_obj in self.keys.values()
+                    if key_obj.status == KeyStatus.DISABLED
+                )
+                if disabled_count >= len(self.keys):
+                    raise NoAvailableKeyError(reason)
+
             # 步骤 3: 如果没有可用的Key，等待后重试
-            log.debug("当前无可用密钥，等待中...")
-            await asyncio.sleep(1)
+            remaining_seconds = deadline_monotonic - time.monotonic()
+            if remaining_seconds <= 0:
+                log.warning("获取 Gemini API Key 超时：%s", reason)
+                raise NoAvailableKeyError(reason)
+
+            log.debug("当前无可用密钥，等待中... | reason=%s", reason)
+            await asyncio.sleep(min(sleep_interval, remaining_seconds))
 
     async def release_key(
         self,

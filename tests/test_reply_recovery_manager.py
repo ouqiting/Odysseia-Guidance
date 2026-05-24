@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+import src.chat.services.reply_recovery_manager as reply_recovery_manager_module
 from src.chat.services.reply_recovery_manager import (
     ReplySideEffectPayload,
     reply_recovery_manager,
@@ -257,3 +258,40 @@ async def test_reply_recovery_manager_can_defer_side_effects_until_after_complet
         user_content="hello",
         ai_response="world",
     )
+    assert task_id not in reply_recovery_manager._side_effect_payloads
+
+
+@pytest.mark.asyncio
+async def test_reply_recovery_manager_prunes_old_terminal_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await reply_recovery_manager.clear_for_tests()
+    monkeypatch.setattr(reply_recovery_manager_module, "MAX_TERMINAL_TASKS", 1)
+
+    message_one = SimpleNamespace(
+        id=1001,
+        channel=SimpleNamespace(id=2001),
+        guild=SimpleNamespace(id=3001),
+        author=SimpleNamespace(id=4001),
+    )
+    message_two = SimpleNamespace(
+        id=1002,
+        channel=SimpleNamespace(id=2002),
+        guild=SimpleNamespace(id=3002),
+        author=SimpleNamespace(id=4002),
+    )
+
+    task_one = await reply_recovery_manager.register_message_task(message_one)
+    await reply_recovery_manager.drop_task(task_one, reason="test_drop_one")
+    assert task_one in reply_recovery_manager._tasks
+
+    task_two = await reply_recovery_manager.register_message_task(message_two)
+    await reply_recovery_manager.drop_task(task_two, reason="test_drop_two")
+
+    terminal_task_ids = [
+        task_id
+        for task_id, task in reply_recovery_manager._tasks.items()
+        if task.task_state in {"completed", "dropped"}
+    ]
+    assert terminal_task_ids == [task_two]
+    assert task_one not in reply_recovery_manager._tasks

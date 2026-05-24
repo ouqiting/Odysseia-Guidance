@@ -329,3 +329,85 @@ async def test_flush_pending_text_deliveries_skips_existing_message(
     queue = getattr(bot, "_pending_text_deliveries")
     assert queue == []
     channel.fetch_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_requeue_pending_delivery_moves_exhausted_item_to_dead_letter(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await reply_recovery_manager.clear_for_tests()
+
+    bot = FakeBot()
+    message = SimpleNamespace(
+        id=654,
+        channel=SimpleNamespace(id=123),
+        guild=SimpleNamespace(id=321),
+        author=SimpleNamespace(id=987),
+    )
+    task_id = await reply_recovery_manager.register_message_task(message)
+
+    monkeypatch.setattr(sender, "MAX_RETRY_CYCLES", 1)
+    monkeypatch.setattr(sender, "MAX_QUEUE_AGE_SECONDS", 3600.0)
+
+    delivery = sender.PendingTextDelivery(
+        channel_id=123,
+        content="hello",
+        task_id=task_id,
+        retry_cycle_count=0,
+        last_error="channel_unavailable",
+    )
+
+    await sender._requeue_pending_delivery(bot, delivery)
+
+    assert getattr(bot, "_pending_text_deliveries") == []
+    dead_letters = getattr(bot, "_pending_text_delivery_dead_letters")
+    assert len(dead_letters) == 1
+    assert dead_letters[0]["reason"].startswith("max_retry_cycles_exceeded:")
+
+    snapshot = await reply_recovery_manager.get_task_snapshot(task_id)
+    assert snapshot is not None
+    assert snapshot.task_state == "dropped"
+
+
+@pytest.mark.asyncio
+async def test_flush_pending_text_deliveries_drops_permanent_error_task(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await reply_recovery_manager.clear_for_tests()
+
+    bot = FakeBot()
+    channel = FakeChannel()
+    bot._channels[channel.id] = channel
+    message = SimpleNamespace(
+        id=777,
+        channel=SimpleNamespace(id=channel.id),
+        guild=SimpleNamespace(id=888),
+        author=SimpleNamespace(id=999),
+    )
+    task_id = await reply_recovery_manager.register_message_task(message)
+
+    monkeypatch.setattr(
+        sender,
+        "_attempt_delivery",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    )
+
+    sender.initialize_reliable_delivery_state(bot)
+    getattr(bot, "_pending_text_deliveries").append(
+        sender.PendingTextDelivery(
+            channel_id=channel.id,
+            content="hello",
+            task_id=task_id,
+        )
+    )
+
+    await sender.flush_pending_text_deliveries(bot)
+
+    assert getattr(bot, "_pending_text_deliveries") == []
+    dead_letters = getattr(bot, "_pending_text_delivery_dead_letters")
+    assert len(dead_letters) == 1
+    assert dead_letters[0]["reason"] == "permanent_send_error:RuntimeError"
+
+    snapshot = await reply_recovery_manager.get_task_snapshot(task_id)
+    assert snapshot is not None
+    assert snapshot.task_state == "dropped"

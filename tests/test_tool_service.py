@@ -1,3 +1,4 @@
+import asyncio
 import pathlib
 import sys
 from types import SimpleNamespace
@@ -6,6 +7,7 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
+import src.chat.features.tools.services.tool_service as tool_service_module
 from src.chat.features.tools.services.tool_service import ToolService
 
 
@@ -136,4 +138,33 @@ async def test_execute_tool_call_isolated_by_user_scope():
 
     assert first_user_result.function_response.response["result"] == {"echo": 99}
     assert second_user_result.function_response.response["result"] == {"echo": 99}
+    assert call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_call_times_out_and_allows_retry(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    call_count = 0
+
+    async def slow_tool(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        await asyncio.sleep(0.05)
+        return {"echo": kwargs["value"]}
+
+    monkeypatch.setattr(
+        tool_service_module,
+        "_TOOL_EXECUTION_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    service = _build_service({"slow_tool": slow_tool})
+    tool_call = SimpleNamespace(name="slow_tool", args={"value": "late"})
+
+    timeout_result = await service.execute_tool_call(tool_call)
+    retry_result = await service.execute_tool_call(tool_call)
+
+    assert "Tool execution timed out" in timeout_result.function_response.response["error"]
+    assert "Tool execution timed out" in retry_result.function_response.response["error"]
     assert call_count == 2
