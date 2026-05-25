@@ -94,6 +94,16 @@ class KimiModelClient:
     def has_configured_keys(self) -> bool:
         return self.kimi_key_rotation.has_configured_keys
 
+    @property
+    def will_use_custom_site(self) -> bool:
+        """判断本次请求是否会尝试使用公益站。"""
+        return bool(
+            self.custom_moonshot_url
+            and self.custom_moonshot_api_key
+            and self.custom_moonshot_model_name
+            and not self.custom_site_disabled
+        )
+
     def get_validation_error(self) -> Optional[str]:
         if self.has_configured_keys:
             return None
@@ -130,9 +140,6 @@ class KimiModelClient:
 
         combined_text = " ".join(text_parts)
         lowered_text = combined_text.lower()
-
-        if "网" in combined_text:
-            return True
 
         if re.search(r"https?://|www\.", lowered_text):
             return True

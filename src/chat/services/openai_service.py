@@ -1203,15 +1203,6 @@ class OpenAIService:
             else:
                 log.warning(f"[{channel_label}] 获取到了工具，但转换结果为空！")
 
-        kimi_builtin_tools: List[Dict[str, Any]] = []
-        if is_kimi_model and should_enable_kimi_web_search:
-            kimi_builtin_tools = [
-                {
-                    "type": "builtin_function",
-                    "function": {"name": "$web_search"},
-                }
-            ]
-
         # 构建 Prompt 并转 OpenAI 消息格式
         final_conversation = await prompt_service.build_chat_prompt(
             user_name=user_name,
@@ -1489,6 +1480,18 @@ class OpenAIService:
                     )
                 else:
                     request_model_name = self.kimi_model_client.get_request_model_name()
+
+                # Kimi 联网搜索工具：仅在使用官方站时注入
+                kimi_builtin_tools: List[Dict[str, Any]] = []
+                if is_kimi_model and should_enable_kimi_web_search:
+                    using_custom_site = self.kimi_model_client.will_use_custom_site and not skip_custom_site_for_this_turn
+                    if not using_custom_site:
+                        kimi_builtin_tools = [
+                            {
+                                "type": "builtin_function",
+                                "function": {"name": "$web_search"},
+                            }
+                        ]
 
                 proactive_tool_choice = resolve_proactive_tool_choice(
                     message,
