@@ -73,6 +73,10 @@ class KimiModelClient:
 
     async def notify_alert(self, content: str) -> None:
         """向指定管理员发送 Kimi 轮换告警私信（失败不影响主流程）。"""
+        if not app_config.ALERT_ENABLE:
+            log.debug("[KimiAlert] 告警私信已禁用，跳过: %s", content)
+            return
+
         bot = self.bot_getter() if callable(self.bot_getter) else None
         if bot is None:
             log.warning("[KimiAlert] Bot 实例尚未注入，跳过私信告警: %s", content)

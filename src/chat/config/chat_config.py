@@ -613,6 +613,10 @@ TEXT_ATTACHMENT_PROCESSING_CONFIG = {
     },
 }
 
+# --- 通知配置 ---
+# 是否启用 Kimi 和回退渠道的管理员私信告警
+ALERT_ENABLE = os.getenv("ALERT_ENABLE", "True").lower() == "true"
+
 # --- 调试配置 ---
 DEBUG_CONFIG = {
     "LOG_FINAL_CONTEXT": False,  # 是否在日志中打印发送给AI的最终上下文，用于调试
