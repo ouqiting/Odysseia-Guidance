@@ -20,7 +20,7 @@ class MoonshotVisionService:
 
     def __init__(self) -> None:
         self.moonshot_url = os.getenv("MOONSHOT_URL")
-        self.moonshot_api_keys = self._split_api_keys(os.getenv("MOONSHOT_API_KEY"))
+        self.moonshot_api_keys = self._split_api_keys(os.getenv("MOONSHOT_VISION_KEY"))
         self.model_name = "moonshot-v1-8k-vision-preview"
 
     @staticmethod
