@@ -15,16 +15,25 @@ from src.chat.services.tool_intent_service import (
 def test_extract_forced_tool_name_supports_alias_mapping():
     result = extract_forced_tool_name(
         "来给我唱个歌吧 tool:tts",
-        ["tts_tool", "pixiv_tool"],
+        ["xiaomi_tts_tool", "pixiv_tool"],
     )
 
-    assert result == "tts_tool"
+    assert result == "xiaomi_tts_tool"
+
+
+def test_extract_forced_tool_name_supports_chinese_alias_mapping():
+    result = extract_forced_tool_name(
+        "帮我查一下这个新闻 tool:搜索",
+        ["search_web", "pixiv_tool"],
+    )
+
+    assert result == "search_web"
 
 
 def test_resolve_proactive_tool_choice_matches_explicit_tool_name():
     result = resolve_proactive_tool_choice(
         "帮我找点图 tool:pixiv",
-        ["tts_tool", "pixiv_tool"],
+        ["xiaomi_tts_tool", "pixiv_tool"],
     )
 
     assert result == {
@@ -35,13 +44,13 @@ def test_resolve_proactive_tool_choice_matches_explicit_tool_name():
 
 def test_resolve_proactive_tool_choice_supports_direct_tool_name():
     result = resolve_proactive_tool_choice(
-        "请直接朗读这段文字 tool:tts_tool",
-        ["tts_tool", "pixiv_tool"],
+        "请直接朗读这段文字 tool:xiaomi_tts_tool",
+        ["xiaomi_tts_tool", "pixiv_tool"],
     )
 
     assert result == {
         "type": "function",
-        "function": {"name": "tts_tool"},
+        "function": {"name": "xiaomi_tts_tool"},
     }
 
 
@@ -57,7 +66,7 @@ def test_resolve_proactive_tool_choice_returns_none_when_tool_unavailable():
 def test_extract_forced_tool_name_returns_none_without_explicit_directive():
     result = extract_forced_tool_name(
         "来给我唱个歌吧",
-        ["tts_tool", "pixiv_tool"],
+        ["xiaomi_tts_tool", "pixiv_tool"],
     )
 
     assert result is None

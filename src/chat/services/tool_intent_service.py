@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 log = logging.getLogger(__name__)
 
-_FORCED_TOOL_PATTERN = re.compile(r"(?:^|\s)tool:([a-zA-Z0-9_\-$]+)\b", re.IGNORECASE)
+_FORCED_TOOL_PATTERN = re.compile(r"(?:^|\s)tool:([^\s]+)", re.IGNORECASE)
 _TOOL_NAME_ALIAS_MAP = {
     "tts": "xiaomi_tts_tool",
     "pixiv": "pixiv_tool",
