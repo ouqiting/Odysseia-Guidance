@@ -265,3 +265,55 @@ async def test_main_reply_does_not_fallback_on_non_locking_channel_error(
         call.kwargs["model_name"] for call in execute_channel_response.await_args_list
     ] == ["custom"]
     mark_channel_failed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_main_reply_skips_fallback_flow_when_secondary_or_tertiary_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    if gemini_service is None:
+        pytest.skip("optional database/vector dependencies are not installed.")
+
+    fallback_state = OpenAIFallbackState(
+        date="2026-05-23",
+        order=[],
+        failed_channels=[],
+    )
+
+    async def _get_daily_state(primary_model: str):
+        return fallback_state
+
+    generate_response = AsyncMock(return_value="primary channel error surfaced")
+    execute_channel_response = AsyncMock()
+
+    monkeypatch.setattr(
+        "src.chat.services.gemini_service.openai_fallback_service.get_daily_state",
+        _get_daily_state,
+    )
+    monkeypatch.setattr(
+        gemini_service,
+        "consume_one_time_debug_base_url",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        gemini_service.openai_service,
+        "generate_response",
+        generate_response,
+    )
+    monkeypatch.setattr(
+        gemini_service.openai_service,
+        "execute_channel_response",
+        execute_channel_response,
+    )
+
+    result = await gemini_service.generate_response(
+        user_id=1,
+        guild_id=1,
+        message="hello",
+        channel=None,
+        model_name="custom",
+    )
+
+    assert result == "primary channel error surfaced"
+    generate_response.assert_awaited_once()
+    execute_channel_response.assert_not_awaited()

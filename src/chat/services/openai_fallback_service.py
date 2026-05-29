@@ -58,7 +58,8 @@ class OpenAIFallbackService:
             if not OpenAIFallbackService.is_supported_model(model_name):
                 continue
             ordered.append(model_name)
-        return ordered
+        # 只有完整配置了主 / 第2 / 第3 三个不同渠道时，才启用回退链。
+        return ordered if len(ordered) == 3 else []
 
     @staticmethod
     def _build_default_state(order: Sequence[str], today_str: str) -> OpenAIFallbackState:
@@ -128,6 +129,10 @@ class OpenAIFallbackService:
                 order,
             ),
         )
+        if normalized_state.failed_channels and not normalized_state.active_order:
+            reset_state = self._build_default_state(order, today_str)
+            self._state_by_primary_model[cache_key] = reset_state
+            return reset_state
         self._state_by_primary_model[cache_key] = normalized_state
         return normalized_state
 

@@ -24,13 +24,20 @@ class _FakeDBManager:
 
 
 @pytest.mark.asyncio
-async def test_build_channel_order_deduplicates_and_filters_unsupported():
+async def test_build_channel_order_requires_full_three_channel_chain():
     order = OpenAIFallbackService.build_channel_order(
+        "custom",
+        "deepseek-v4-flash",
+        "kimi-k2.5",
+    )
+    assert order == ["custom", "deepseek-v4-flash", "kimi-k2.5"]
+
+    duplicated_order = OpenAIFallbackService.build_channel_order(
         "custom",
         "deepseek-v4-flash",
         "custom",
     )
-    assert order == ["custom", "deepseek-v4-flash"]
+    assert duplicated_order == []
 
     unsupported_order = OpenAIFallbackService.build_channel_order(
         "gemini-2.5-flash",
@@ -132,3 +139,61 @@ async def test_failure_state_is_in_memory_only_and_resets_after_restart(
 
     assert restarted_state.failed_channels == []
     assert restarted_state.active_order == ["custom", "deepseek-v4-flash", "kimi-k2.5"]
+
+
+@pytest.mark.asyncio
+async def test_daily_state_restarts_from_first_channel_after_all_channels_failed(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    service = OpenAIFallbackService()
+    fake_db = _FakeDBManager()
+    service.db_manager = fake_db
+
+    fake_db.values[OPENAI_FALLBACK_SECONDARY_MODEL_KEY] = "deepseek-v4-flash"
+    fake_db.values[OPENAI_FALLBACK_TERTIARY_MODEL_KEY] = "kimi-k2.5"
+
+    monkeypatch.setattr(
+        OpenAIFallbackService,
+        "_get_today_str",
+        staticmethod(lambda: "2026-05-18"),
+    )
+
+    await service.mark_channel_failed(primary_model="custom", channel_name="custom")
+    await service.mark_channel_failed(
+        primary_model="custom",
+        channel_name="deepseek-v4-flash",
+    )
+    await service.mark_channel_failed(primary_model="custom", channel_name="kimi-k2.5")
+
+    restarted_cycle_state = await service.get_daily_state("custom")
+
+    assert restarted_cycle_state.failed_channels == []
+    assert restarted_cycle_state.active_order == [
+        "custom",
+        "deepseek-v4-flash",
+        "kimi-k2.5",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_get_daily_state_returns_empty_order_when_fallback_chain_is_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    service = OpenAIFallbackService()
+    fake_db = _FakeDBManager()
+    service.db_manager = fake_db
+
+    monkeypatch.setattr(
+        OpenAIFallbackService,
+        "_get_today_str",
+        staticmethod(lambda: "2026-05-18"),
+    )
+
+    fake_db.values[OPENAI_FALLBACK_SECONDARY_MODEL_KEY] = "deepseek-v4-flash"
+    fake_db.values[OPENAI_FALLBACK_TERTIARY_MODEL_KEY] = ""
+
+    state = await service.get_daily_state("custom")
+
+    assert state.order == []
+    assert state.failed_channels == []
+    assert state.active_order == []

@@ -1014,7 +1014,7 @@ class GeminiService:
                 )
 
             return self.openai_service._apply_blacklist_notice(
-                "当前已无可用 OpenAI 兼容渠道，失败渠道会在明天 0 点后自动重置。",
+                "OpenAI 兼容渠道调用失败，但未获取到具体错误信息。",
                 blacklist_punishment_active,
             )
 
