@@ -14,7 +14,7 @@ _TOOL_NAME_ALIAS_MAP = {
     "otto": "otto_tool",
     "tts1": "new_tts_tool",
     "总结": "summarize_channel",
-    "web_search": "search_web",
+    "搜索": "search_web",
 }
 
 
