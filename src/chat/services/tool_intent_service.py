@@ -2,13 +2,20 @@
 
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 log = logging.getLogger(__name__)
 
-_PROACTIVE_TOOL_CHOICE_RULES: Tuple[Tuple[re.Pattern[str], str], ...] = (
-    
-)
+_FORCED_TOOL_PATTERN = re.compile(r"(?:^|\s)tool:([a-zA-Z0-9_\-$]+)\b", re.IGNORECASE)
+_TOOL_NAME_ALIAS_MAP = {
+    "tts": "tts_tool",
+    "pixiv": "pixiv_tool",
+    "塔罗": "tarot_reading",
+    "otto": "otto_tool",
+    "tts1": "new_tts_tool",
+    "总结": "summarize_channel",
+    "web_search": "search_web",
+}
 
 
 def extract_function_tool_names(tools: List[Dict[str, Any]]) -> List[str]:
@@ -27,28 +34,50 @@ def extract_function_tool_names(tools: List[Dict[str, Any]]) -> List[str]:
     return tool_names
 
 
-def resolve_proactive_tool_choice(
+def extract_forced_tool_name(
     user_message: str,
     available_tool_names: List[str],
-) -> Optional[Dict[str, Any]]:
+) -> Optional[str]:
     normalized_message = str(user_message or "").strip()
     if not normalized_message or not available_tool_names:
         return None
 
-    available_tool_name_set = set(available_tool_names)
-    for pattern, tool_name in _PROACTIVE_TOOL_CHOICE_RULES:
-        if not pattern.search(normalized_message):
-            continue
-        if tool_name not in available_tool_name_set:
-            log.info(
-                "检测到工具调用意图，但目标工具当前不可用 | tool=%s | message=%s",
-                tool_name,
-                normalized_message[:200],
-            )
-            return None
-        return {
-            "type": "function",
-            "function": {"name": tool_name},
-        }
+    match = _FORCED_TOOL_PATTERN.search(normalized_message)
+    if not match:
+        return None
 
+    requested_tool_name = match.group(1).strip()
+    if not requested_tool_name:
+        return None
+
+    lowered_requested_tool_name = requested_tool_name.lower()
+    resolved_tool_name = _TOOL_NAME_ALIAS_MAP.get(
+        lowered_requested_tool_name,
+        requested_tool_name,
+    )
+    available_tool_name_set = set(available_tool_names)
+
+    if resolved_tool_name in available_tool_name_set:
+        return resolved_tool_name
+
+    log.info(
+        "检测到显式工具指定，但目标工具当前不可用 | requested=%s | resolved=%s | message=%s",
+        requested_tool_name,
+        resolved_tool_name,
+        normalized_message[:200],
+    )
     return None
+
+
+def resolve_proactive_tool_choice(
+    user_message: str,
+    available_tool_names: List[str],
+) -> Optional[Dict[str, Any]]:
+    forced_tool_name = extract_forced_tool_name(user_message, available_tool_names)
+    if not forced_tool_name:
+        return None
+
+    return {
+        "type": "function",
+        "function": {"name": forced_tool_name},
+    }

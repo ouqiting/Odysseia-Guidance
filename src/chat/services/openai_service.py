@@ -21,6 +21,7 @@ from src.chat.features.tools.services.tool_service import ToolService
 from src.chat.services.kimi_key_rotation import NoAvailableKimiKeyError
 from src.chat.services.tool_intent_service import (
     extract_function_tool_names,
+    extract_forced_tool_name,
     resolve_proactive_tool_choice,
 )
 from src.chat.services.openai_models import (
@@ -291,6 +292,14 @@ class OpenAIService:
         if response.startswith(notice):
             return response
         return f"{notice}{response}"
+
+    @staticmethod
+    def _build_forced_tool_instruction(tool_name: str) -> str:
+        return f"本次对话必须调用{tool_name}工具。"
+
+    @staticmethod
+    def _build_missing_forced_tool_retry_instruction(tool_name: str) -> str:
+        return f"检测到你没有调用{tool_name}工具。请重新来。"
 
     async def _send_with_network_retry_once(
         self,
@@ -1434,11 +1443,13 @@ class OpenAIService:
         )
 
         max_calls = 5
+        max_forced_tool_retry_count = 3
         called_tool_names: List[str] = []
         bad_format_retries = 0
         deep_vision_used = False
         tool_image_context_list = self._build_tool_image_context_list(images)
         kimi_token_too_long_retry_used = False
+        forced_tool_retry_count = 0
 
         # 本轮对话是否跳过公益站（如果本轮中公益站曾报错，则后续因违禁词等引起的重试直接走官方站）
         skip_custom_site_for_this_turn = False
@@ -1497,6 +1508,10 @@ class OpenAIService:
                     message,
                     extract_function_tool_names(openai_tools),
                 )
+                forced_tool_name = extract_forced_tool_name(
+                    message,
+                    extract_function_tool_names(openai_tools),
+                )
                 if proactive_tool_choice:
                     log.info(
                         "[%s] 已根据用户消息命中主动工具调用意图，强制指定工具: %s",
@@ -1504,9 +1519,20 @@ class OpenAIService:
                         proactive_tool_choice["function"]["name"],
                     )
 
+                request_messages = list(openai_messages)
+                if forced_tool_name:
+                    request_messages.append(
+                        {
+                            "role": "user",
+                            "content": self._build_forced_tool_instruction(
+                                forced_tool_name
+                            ),
+                        }
+                    )
+
                 payload = self._build_chat_completions_payload(
                     request_model_name=request_model_name,
-                    openai_messages=openai_messages,
+                    openai_messages=request_messages,
                     gen_config=gen_config,
                     is_custom_model=is_custom_model,
                     is_kimi_model=is_kimi_model,
@@ -1702,6 +1728,43 @@ class OpenAIService:
                     msg_to_append["tool_calls"] = tool_calls
 
                 openai_messages.append(msg_to_append)
+
+                requested_tool_names = [
+                    str(call.get("function", {}).get("name") or "").strip()
+                    for call in (tool_calls or [])
+                    if isinstance(call, dict)
+                ]
+
+                if forced_tool_name and forced_tool_name not in requested_tool_names:
+                    forced_tool_retry_count += 1
+                    log.warning(
+                        "[%s] 本轮要求强制调用工具，但模型未调用指定工具 | required=%s | actual=%s | retry=%s/%s",
+                        channel_label,
+                        forced_tool_name,
+                        requested_tool_names,
+                        forced_tool_retry_count,
+                        max_forced_tool_retry_count,
+                    )
+                    if forced_tool_retry_count >= max_forced_tool_retry_count:
+                        self.last_called_tools = called_tool_names
+                        raise OpenAIChannelExecutionFailure(
+                            channel_name=effective_model_name,
+                            user_message=(
+                                f"模型连续 {max_forced_tool_retry_count} 次没有调用"
+                                f"{forced_tool_name}工具，请稍后再试或换个模型。"
+                            ),
+                            failure_kind="forced_tool_not_called",
+                            should_lock_channel=False,
+                        )
+                    openai_messages.append(
+                        {
+                            "role": "user",
+                            "content": self._build_missing_forced_tool_retry_instruction(
+                                forced_tool_name
+                            ),
+                        }
+                    )
+                    continue
 
                 if not tool_calls:
                     # if content:
