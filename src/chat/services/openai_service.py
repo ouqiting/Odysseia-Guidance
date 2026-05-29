@@ -1518,9 +1518,12 @@ class OpenAIService:
                         channel_label,
                         proactive_tool_choice["function"]["name"],
                     )
+                forced_tool_pending = bool(
+                    forced_tool_name and forced_tool_name not in called_tool_names
+                )
 
                 request_messages = list(openai_messages)
-                if forced_tool_name:
+                if forced_tool_pending and i == 0:
                     request_messages.append(
                         {
                             "role": "user",
@@ -1735,7 +1738,7 @@ class OpenAIService:
                     if isinstance(call, dict)
                 ]
 
-                if forced_tool_name and forced_tool_name not in requested_tool_names:
+                if forced_tool_pending and forced_tool_name not in requested_tool_names:
                     forced_tool_retry_count += 1
                     log.warning(
                         "[%s] 本轮要求强制调用工具，但模型未调用指定工具 | required=%s | actual=%s | retry=%s/%s",

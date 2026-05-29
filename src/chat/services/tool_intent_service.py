@@ -8,7 +8,7 @@ log = logging.getLogger(__name__)
 
 _FORCED_TOOL_PATTERN = re.compile(r"(?:^|\s)tool:([a-zA-Z0-9_\-$]+)\b", re.IGNORECASE)
 _TOOL_NAME_ALIAS_MAP = {
-    "tts": "tts_tool",
+    "tts": "xiaomi_tts_tool",
     "pixiv": "pixiv_tool",
     "塔罗": "tarot_reading",
     "otto": "otto_tool",
