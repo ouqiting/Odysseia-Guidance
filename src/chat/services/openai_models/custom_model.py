@@ -2045,6 +2045,19 @@ class CustomModelClient:
                                 f"{combined_error_text} | {response_text}"
                             )
 
+                        # 当上游明确返回该模型因免费额度被禁用时，直接终止请求，
+                        # 不删除/不轮换 API Key，避免误伤可用密钥。
+                        if (
+                            current_response.status_code == 403
+                            and "Free tier users do not have access to this model" in response_text
+                        ):
+                            raise CustomModelChannelError(
+                                "此模型已被限制使用",
+                                failure_kind="custom_model_restricted",
+                                api_key_rotation_count=api_key_rotation_count,
+                                total_api_keys=initial_total_api_keys,
+                            )
+
                         if (
                             self._is_rate_limited_error(
                                 current_response.status_code,

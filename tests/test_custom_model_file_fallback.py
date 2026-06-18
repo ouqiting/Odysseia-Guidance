@@ -362,3 +362,65 @@ async def test_custom_inline_keys_raise_only_after_all_keys_hit_429():
     assert exc.api_key_rotation_count == 2
     assert exc.total_api_keys == 2
     assert request_key_order == ["key-alpha", "key-beta"]
+
+
+@pytest.mark.asyncio
+async def test_custom_keys_do_not_rotate_or_delete_on_free_tier_403(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    """命中 'Free tier users do not have access to this model' 时，
+    应直接抛出模型被限制的错误，不删除/不轮换任何 API Key。"""
+    client = CustomModelClient()
+    runtime_config = _build_runtime_config()
+    file_path = tmp_path / "CUSTOM_MODEL_API_KEY.json"
+    runtime_config["api_key_file_path"] = str(file_path)
+    file_path.write_text(
+        json.dumps({"api_keys": ["key-alpha", "key-beta"]}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    request_key_order = []
+    persisted_orders = []
+
+    monkeypatch.setattr(
+        custom_model_module,
+        "persist_custom_model_api_keys_to_file",
+        lambda file_path, api_keys: persisted_orders.append(list(api_keys)),
+    )
+
+    def free_tier_handler(request: httpx.Request) -> httpx.Response:
+        api_key = request.headers["Authorization"].removeprefix("Bearer ").strip()
+        request_key_order.append(api_key)
+        return httpx.Response(
+            403,
+            json={
+                "error": {
+                    "message": "Free tier users do not have access to this model.",
+                    "type": "invalid_request_error",
+                }
+            },
+            request=request,
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(free_tier_handler)
+    ) as http_client:
+        with pytest.raises(CustomModelChannelError) as exc_info:
+            await client.send(
+                http_client=http_client,
+                payload={"model": "custom-test-model", "messages": []},
+                runtime_config=runtime_config,
+            )
+
+    exc = exc_info.value
+    assert str(exc) == "此模型已被限制使用"
+    assert exc.failure_kind == "custom_model_restricted"
+    assert exc.api_key_rotation_count == 0
+    assert exc.total_api_keys == 2
+    # 只请求了一次，没有轮换到其他 Key
+    assert request_key_order == ["key-alpha"]
+    # 没有删除或持久化任何 Key 顺序变更
+    assert persisted_orders == []
+    assert json.loads(file_path.read_text(encoding="utf-8")) == {
+        "api_keys": ["key-alpha", "key-beta"]
+    }
