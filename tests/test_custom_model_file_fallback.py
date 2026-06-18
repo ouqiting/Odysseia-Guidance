@@ -370,11 +370,11 @@ async def test_custom_keys_do_not_rotate_or_delete_on_free_tier_403(
     tmp_path,
 ):
     """命中 'Free tier users do not have access to this model' 时，
-    应直接抛出模型被限制的错误，不删除/不轮换任何 API Key。"""
+    不删除/不轮换任何 API Key，让原始 HTTP 403 异常向上抛出，便于
+    上层展示 'Custom 连接失败: ... 详情: ...'。"""
     client = CustomModelClient()
     runtime_config = _build_runtime_config()
     file_path = tmp_path / "CUSTOM_MODEL_API_KEY.json"
-    runtime_config["api_key_file_path"] = str(file_path)
     file_path.write_text(
         json.dumps({"api_keys": ["key-alpha", "key-beta"]}, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -395,7 +395,7 @@ async def test_custom_keys_do_not_rotate_or_delete_on_free_tier_403(
             403,
             json={
                 "error": {
-                    "message": "Free tier users do not have access to this model.",
+                    "message": "Free tier users do not have access to this model. Upgrade to paid credits for unrestricted access.",
                     "type": "invalid_request_error",
                 }
             },
@@ -405,7 +405,7 @@ async def test_custom_keys_do_not_rotate_or_delete_on_free_tier_403(
     async with httpx.AsyncClient(
         transport=httpx.MockTransport(free_tier_handler)
     ) as http_client:
-        with pytest.raises(CustomModelChannelError) as exc_info:
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
             await client.send(
                 http_client=http_client,
                 payload={"model": "custom-test-model", "messages": []},
@@ -413,10 +413,10 @@ async def test_custom_keys_do_not_rotate_or_delete_on_free_tier_403(
             )
 
     exc = exc_info.value
-    assert str(exc) == "此模型已被限制使用"
-    assert exc.failure_kind == "custom_model_restricted"
-    assert exc.api_key_rotation_count == 0
-    assert exc.total_api_keys == 2
+    assert exc.response.status_code == 403
+    assert "403" in str(exc)
+    # 原始响应体保留完整上游报错，上层可据此展示 "Custom 连接失败: ... 详情: ..."
+    assert "Free tier users do not have access to this model" in exc.response.text
     # 只请求了一次，没有轮换到其他 Key
     assert request_key_order == ["key-alpha"]
     # 没有删除或持久化任何 Key 顺序变更

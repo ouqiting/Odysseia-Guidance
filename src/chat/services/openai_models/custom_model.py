@@ -244,6 +244,9 @@ class CustomModelClient:
         ):
             return "402 Payment Required"
         if status_code == 403 or "403 forbidden" in lowered_error_text:
+            # 该报错说明模型本身被限制，不是 Key 失效，不应删除/轮换 Key
+            if "free tier users do not have access to this model" in lowered_error_text:
+                return ""
             return "403 Forbidden"
         return ""
 
@@ -2043,19 +2046,6 @@ class CustomModelClient:
                         if response_text:
                             combined_error_text = (
                                 f"{combined_error_text} | {response_text}"
-                            )
-
-                        # 当上游明确返回该模型因免费额度被禁用时，直接终止请求，
-                        # 不删除/不轮换 API Key，避免误伤可用密钥。
-                        if (
-                            current_response.status_code == 403
-                            and "Free tier users do not have access to this model" in response_text
-                        ):
-                            raise CustomModelChannelError(
-                                "此模型已被限制使用",
-                                failure_kind="custom_model_restricted",
-                                api_key_rotation_count=api_key_rotation_count,
-                                total_api_keys=initial_total_api_keys,
                             )
 
                         if (
