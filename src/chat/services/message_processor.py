@@ -19,14 +19,18 @@ log = logging.getLogger(__name__)
 # <a:emoji_name:emoji_id> (动态) 或 <:emoji_name:emoji_id> (静态)
 EMOJI_REGEX = re.compile(r"<a?:(\w+):(\d+)>")
 
-# FakeNitro 贴纸链接格式: [名字](https://media.discordapp.net/stickers/ID.格式?...)
+# FakeNitro 贴纸链接格式:
+# [名字](https://media.discordapp.net/stickers/ID.格式?...) 或裸贴纸 URL
 FAKENITRO_STICKER_REGEX = re.compile(
-    r"\[([^\]]+)\]\((https://media\.discordapp\.net/stickers/\d+\.(?:png|gif|webp)(?:\?[^\)]*)?)\)"
+    r"\[([^\]]+)\]\((https://media\.discordapp\.net/stickers/(\d+)\.(?:png|gif|webp)(?:\?[^\)]*)?)\)"
+    r"|(https://media\.discordapp\.net/stickers/(\d+)\.(?:png|gif|webp)(?:\?[^\s<>\)]*)?)"
 )
 
-# FakeNitro 表情链接格式: [名字](https://cdn.discordapp.com/emojis/ID.格式?...)
+# FakeNitro 表情链接格式:
+# [名字](https://cdn.discordapp.com/emojis/ID.格式?...) 或裸表情 URL
 FAKENITRO_EMOJI_REGEX = re.compile(
-    r"\[([^\]]+)\]\((https://cdn\.discordapp\.com/emojis/\d+\.(?:png|gif|webp)(?:\?[^\)]*)?)\)"
+    r"\[([^\]]+)\]\((https://cdn\.discordapp\.com/emojis/(\d+)\.(?:png|gif|webp)(?:\?[^\)]*)?)\)"
+    r"|(https://cdn\.discordapp\.com/emojis/(\d+)\.(?:png|gif|webp)(?:\?[^\s<>\)]*)?)"
 )
 
 TEXT_ATTACHMENT_EXTENSIONS = {
@@ -545,8 +549,8 @@ class MessageProcessor:
 
         async with aiohttp.ClientSession() as session:
             for match in matches:
-                sticker_name = match.group(1)
-                sticker_url = match.group(2)
+                sticker_name = match.group(1) or f"sticker_{match.group(5)}"
+                sticker_url = match.group(2) or match.group(4)
 
                 # 下载贴纸图片
                 image_bytes = await self._fetch_image_aio(
@@ -605,8 +609,8 @@ class MessageProcessor:
 
         async with aiohttp.ClientSession() as session:
             for match in matches:
-                emoji_name = match.group(1)
-                emoji_url = match.group(2)
+                emoji_name = match.group(1) or f"emoji_{match.group(5)}"
+                emoji_url = match.group(2) or match.group(4)
 
                 # 下载表情图片
                 image_bytes = await self._fetch_image_aio(
