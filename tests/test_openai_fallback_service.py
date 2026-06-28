@@ -47,6 +47,127 @@ async def test_build_channel_order_requires_full_three_channel_chain():
     assert unsupported_order == []
 
 
+def test_is_custom_preset_channel_recognizes_preset_form():
+    assert OpenAIFallbackService.is_custom_preset_channel("custom-vercel-kimi") is True
+    assert OpenAIFallbackService.is_custom_preset_channel("custom-kimchi白嫖") is True
+    # 纯 custom 不算预设渠道（使用当前启用配置）
+    assert OpenAIFallbackService.is_custom_preset_channel("custom") is False
+    # 缺失预设名
+    assert OpenAIFallbackService.is_custom_preset_channel("custom-") is False
+    assert OpenAIFallbackService.is_custom_preset_channel("") is False
+    assert OpenAIFallbackService.is_custom_preset_channel("deepseek-v4-flash") is False
+
+
+def test_extract_custom_preset_name_splits_on_first_dash():
+    assert (
+        OpenAIFallbackService.extract_custom_preset_name("custom-vercel-kimi")
+        == "vercel-kimi"
+    )
+    assert (
+        OpenAIFallbackService.extract_custom_preset_name("custom-kimchi白嫖")
+        == "kimchi白嫖"
+    )
+    assert OpenAIFallbackService.extract_custom_preset_name("custom") == ""
+    assert OpenAIFallbackService.extract_custom_preset_name("deepseek-v4-flash") == ""
+
+
+def test_is_supported_fallback_channel_accepts_custom_preset_for_secondary():
+    # 基础模型仍受支持
+    assert OpenAIFallbackService.is_supported_fallback_channel("deepseek-v4-flash") is True
+    assert OpenAIFallbackService.is_supported_fallback_channel("kimi-k2.5") is True
+    assert OpenAIFallbackService.is_supported_fallback_channel("custom") is True
+    # custom-<preset> 仅对回退渠道（第 2 / 第 3）允许
+    assert (
+        OpenAIFallbackService.is_supported_fallback_channel("custom-vercel-kimi")
+        is True
+    )
+    assert (
+        OpenAIFallbackService.is_supported_fallback_channel("custom-kimchi白嫖")
+        is True
+    )
+    # 无效预设名或其它模型
+    assert OpenAIFallbackService.is_supported_fallback_channel("custom-") is False
+    assert (
+        OpenAIFallbackService.is_supported_fallback_channel("gemini-2.5-flash")
+        is False
+    )
+
+
+def test_build_channel_order_accepts_custom_preset_secondary_and_tertiary():
+    order = OpenAIFallbackService.build_channel_order(
+        "custom",
+        "custom-vercel-kimi",
+        "custom-kimchi白嫖",
+    )
+    assert order == ["custom", "custom-vercel-kimi", "custom-kimchi白嫖"]
+
+    # 主渠道仍必须是基础模型，不接受 custom-<preset>
+    primary_preset_order = OpenAIFallbackService.build_channel_order(
+        "custom-vercel-kimi",
+        "deepseek-v4-flash",
+        "kimi-k2.5",
+    )
+    assert primary_preset_order == []
+
+    # 混合：custom + custom-<preset> + kimi
+    mixed_order = OpenAIFallbackService.build_channel_order(
+        "custom",
+        "custom-vercel-kimi",
+        "kimi-k2.5",
+    )
+    assert mixed_order == ["custom", "custom-vercel-kimi", "kimi-k2.5"]
+
+    # custom 与 custom-<preset> 视为不同渠道；但第三渠道重复 custom 时
+    # 仅剩 2 个不同渠道，不满足完整三渠道链要求
+    dedup_order = OpenAIFallbackService.build_channel_order(
+        "custom",
+        "custom-vercel-kimi",
+        "custom",
+    )
+    assert dedup_order == []
+
+    # 缺失预设名（custom-）不视为有效渠道，导致回退链不完整
+    invalid_order = OpenAIFallbackService.build_channel_order(
+        "custom",
+        "custom-",
+        "kimi-k2.5",
+    )
+    assert invalid_order == []
+
+
+@pytest.mark.asyncio
+async def test_daily_state_tracks_custom_preset_channels(monkeypatch: pytest.MonkeyPatch):
+    service = OpenAIFallbackService()
+    fake_db = _FakeDBManager()
+    service.db_manager = fake_db
+
+    monkeypatch.setattr(
+        OpenAIFallbackService,
+        "_get_today_str",
+        staticmethod(lambda: "2026-05-18"),
+    )
+
+    fake_db.values[OPENAI_FALLBACK_SECONDARY_MODEL_KEY] = "custom-vercel-kimi"
+    fake_db.values[OPENAI_FALLBACK_TERTIARY_MODEL_KEY] = "custom-kimchi白嫖"
+
+    state = await service.get_daily_state("custom")
+    assert state.order == ["custom", "custom-vercel-kimi", "custom-kimchi白嫖"]
+    assert state.active_order == ["custom", "custom-vercel-kimi", "custom-kimchi白嫖"]
+
+    # 失败一个预设渠道后应跳过它
+    updated = await service.mark_channel_failed(
+        primary_model="custom",
+        channel_name="custom-vercel-kimi",
+    )
+    assert updated.failed_channels == ["custom-vercel-kimi"]
+    assert updated.active_order == ["custom", "custom-kimchi白嫖"]
+
+    # 重新加载仍保留失败状态
+    reloaded = await service.get_daily_state("custom")
+    assert reloaded.failed_channels == ["custom-vercel-kimi"]
+    assert reloaded.active_order == ["custom", "custom-kimchi白嫖"]
+
+
 @pytest.mark.asyncio
 async def test_mark_channel_failed_skips_it_for_rest_of_day(monkeypatch: pytest.MonkeyPatch):
     service = OpenAIFallbackService()

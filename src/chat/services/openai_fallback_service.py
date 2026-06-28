@@ -16,6 +16,7 @@ SUPPORTED_OPENAI_FALLBACK_MODELS = (
     "kimi-k2.5",
     "custom",
 )
+CUSTOM_PRESET_CHANNEL_PREFIX = "custom-"
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,31 @@ class OpenAIFallbackService:
         return str(model_name or "").strip() in SUPPORTED_OPENAI_FALLBACK_MODELS
 
     @staticmethod
+    def is_custom_preset_channel(model_name: Optional[str]) -> bool:
+        """是否为 `custom-<preset_name>` 形式的预设渠道名。"""
+        normalized = str(model_name or "").strip()
+        if not normalized.startswith(CUSTOM_PRESET_CHANNEL_PREFIX):
+            return False
+        preset_name = OpenAIFallbackService.extract_custom_preset_name(normalized)
+        return bool(preset_name)
+
+    @staticmethod
+    def extract_custom_preset_name(model_name: Optional[str]) -> str:
+        """从 `custom-<preset_name>` 形式中提取预设名；非该形式返回空串。"""
+        normalized = str(model_name or "").strip()
+        if not normalized.startswith(CUSTOM_PRESET_CHANNEL_PREFIX):
+            return ""
+        preset_name = normalized[len(CUSTOM_PRESET_CHANNEL_PREFIX):].strip()
+        return preset_name
+
+    @staticmethod
+    def is_supported_fallback_channel(model_name: Optional[str]) -> bool:
+        """主渠道仍使用 is_supported_model；第 2 / 第 3 渠道允许 custom-<preset> 形式。"""
+        if OpenAIFallbackService.is_supported_model(model_name):
+            return True
+        return OpenAIFallbackService.is_custom_preset_channel(model_name)
+
+    @staticmethod
     def build_channel_order(
         primary_model: Optional[str],
         secondary_model: Optional[str],
@@ -51,11 +77,16 @@ class OpenAIFallbackService:
             return []
 
         ordered: List[str] = []
-        for raw_model in (primary_model, secondary_model, tertiary_model):
+        # 主渠道必须是基础模型（deepseek/kimi/custom），不接受 custom-<preset>
+        primary_name = str(primary_model or "").strip()
+        if primary_name and primary_name not in ordered:
+            ordered.append(primary_name)
+        # 第 2 / 第 3 渠道允许 custom-<preset> 形式
+        for raw_model in (secondary_model, tertiary_model):
             model_name = str(raw_model or "").strip()
             if not model_name or model_name in ordered:
                 continue
-            if not OpenAIFallbackService.is_supported_model(model_name):
+            if not OpenAIFallbackService.is_supported_fallback_channel(model_name):
                 continue
             ordered.append(model_name)
         # 只有完整配置了主 / 第2 / 第3 三个不同渠道时，才启用回退链。

@@ -47,6 +47,79 @@ def _build_runtime_config(
     }
 
 
+def test_build_runtime_config_from_preset_settings_uses_preset_values(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    # 锁定当前 env 配置，确保预设构建不依赖 / 不修改 env
+    monkeypatch.setenv("CUSTOM_MODEL_URL", "https://env.example.com/v1")
+    monkeypatch.setenv("CUSTOM_MODEL_API_KEY", "env-key-1,env-key-2")
+    monkeypatch.setenv("CUSTOM_MODEL_NAME", "env-model-name")
+    monkeypatch.setenv("CUSTOM_MODEL_ENABLE_VISION", "false")
+    monkeypatch.setenv("CUSTOM_MODEL_ENABLE_VIDEO_INPUT", "false")
+
+    client = CustomModelClient()
+    rc = client.build_runtime_config_from_preset_settings(
+        custom_model_url="https://preset.example.com/v1",
+        custom_model_api_key="preset-key-1,preset-key-2",
+        custom_model_name="preset-model-name",
+        custom_model_enable_vision="true",
+        custom_model_enable_video_input="false",
+    )
+
+    assert rc["base_url"] == "https://preset.example.com/v1"
+    assert rc["model_name"] == "preset-model-name"
+    assert rc["api_keys"] == ["preset-key-1", "preset-key-2"]
+    assert rc["api_key"] == "preset-key-1,preset-key-2"
+    assert rc["enable_vision"] is True
+    assert rc["enable_video_input"] is False
+    assert rc["api_key_source_type"] == "inline"
+    assert rc["api_key_file_path"] is None
+    assert rc["api_key_error"] is None
+    # 非预设字段回退使用 env 配置
+    assert isinstance(rc["gateway_provider_timeout_ms"], int)
+    assert isinstance(rc["stream_idle_timeout_seconds"], float)
+
+    # 当前 env 配置未被修改
+    env_rc = client.refresh_from_env()
+    assert env_rc["base_url"] == "https://env.example.com/v1"
+    assert env_rc["model_name"] == "env-model-name"
+    assert env_rc["api_keys"] == ["env-key-1", "env-key-2"]
+
+
+def test_build_runtime_config_from_preset_settings_supports_file_key_reference(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+):
+    monkeypatch.setenv("CUSTOM_MODEL_URL", "https://env.example.com/v1")
+    monkeypatch.setenv("CUSTOM_MODEL_API_KEY", "env-key-1")
+    monkeypatch.setenv("CUSTOM_MODEL_NAME", "env-model-name")
+
+    key_file = tmp_path / "preset-keys.json"
+    key_file.write_text(
+        json.dumps({"api_keys": ["vck_alpha", "vck_beta"]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        "src.chat.utils.custom_model_api_keys._validate_custom_model_api_key_file_path",
+        lambda raw_value: str(key_file) if raw_value == "/data/preset-keys.json" else raw_value,
+    )
+
+    client = CustomModelClient()
+    rc = client.build_runtime_config_from_preset_settings(
+        custom_model_url="https://preset.example.com/v1",
+        custom_model_api_key="/data/preset-keys.json",
+        custom_model_name="preset-model-name",
+        custom_model_enable_vision="false",
+        custom_model_enable_video_input="false",
+    )
+
+    assert rc["api_key_source_type"] == "file"
+    assert rc["api_keys"] == ["vck_alpha", "vck_beta"]
+    assert rc["api_key"] == "vck_alpha,vck_beta"
+    assert rc["base_url"] == "https://preset.example.com/v1"
+
+
 def _build_success_response(
     request: httpx.Request, *, content: str = "ok"
 ) -> httpx.Response:

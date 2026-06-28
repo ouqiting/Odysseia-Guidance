@@ -122,6 +122,16 @@ class CustomModelPresetStore:
             raise CustomModelPresetNotFoundError("预设不存在或已被删除。")
         return self._read_preset_file(file_path)
 
+    def get_preset_by_name(self, preset_name: str) -> Optional[CustomModelPreset]:
+        """按预设名查找预设；不存在时返回 None。"""
+        normalized_name = str(preset_name or "").strip()
+        if not normalized_name:
+            return None
+        for preset in self.list_presets():
+            if preset.name == normalized_name:
+                return preset
+        return None
+
     def create_preset(self, *, name: str, settings: Dict[str, str]) -> CustomModelPreset:
         normalized_name = self._normalize_preset_name(name)
         presets = self.list_presets()

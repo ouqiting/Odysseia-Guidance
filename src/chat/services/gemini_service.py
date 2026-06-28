@@ -37,7 +37,10 @@ from src.chat.features.chat_settings.services.chat_settings_service import (
 from src.chat.utils.image_utils import sanitize_image
 from src.database.services.token_usage_service import token_usage_service
 from src.database.database import AsyncSessionLocal
-from src.chat.services.openai_fallback_service import openai_fallback_service
+from src.chat.services.openai_fallback_service import (
+    OpenAIFallbackService,
+    openai_fallback_service,
+)
 from src.chat.services.openai_service import (
     OpenAIChannelExecutionFailure,
     OpenAIService,
@@ -113,7 +116,10 @@ def _api_key_handler(func: Callable) -> Callable:
         # OpenAI 兼容模型的单轮文本生成不需要 Gemini client，直接交给函数内部路由。
         if (
             func.__name__ == "generate_simple_response"
-            and requested_model_name in OPENAI_COMPATIBLE_MODELS
+            and (
+                requested_model_name in OPENAI_COMPATIBLE_MODELS
+                or OpenAIFallbackService.is_custom_preset_channel(requested_model_name)
+            )
         ):
             return await func(self, *args, **kwargs)
 
@@ -792,8 +798,13 @@ class GeminiService:
                 f"🧪 generate_response 已启用一次性调试 URL: {one_time_debug_base_url}，模型: {model_name or self.default_model_name}"
             )
 
-        # --- OpenAI 兼容专用路由（DeepSeek / Kimi） ---
-        if model_name in ["deepseek-v4-flash", "deepseek-v4-pro", "kimi-k2.5", "custom"]:
+        # --- OpenAI 兼容专用路由（DeepSeek / Kimi / Custom） ---
+        is_openai_compatible_route = (
+            model_name in ["deepseek-v4-flash", "deepseek-v4-pro", "kimi-k2.5"]
+            or OpenAIFallbackService.is_supported_model(model_name)
+            or OpenAIFallbackService.is_custom_preset_channel(model_name)
+        )
+        if is_openai_compatible_route:
             log.info(f"检测到 {model_name} 模型，切换至 OpenAIService。")
             fallback_state = await openai_fallback_service.get_daily_state(model_name)
             if not fallback_state.order:
@@ -1986,7 +1997,10 @@ class GeminiService:
         Returns:
             生成的文本字符串，如果失败则返回 None。
         """
-        if model_name in OPENAI_COMPATIBLE_MODELS:
+        if (
+            model_name in OPENAI_COMPATIBLE_MODELS
+            or OpenAIFallbackService.is_custom_preset_channel(model_name)
+        ):
             return await self.openai_service.generate_simple_text(
                 prompt=prompt,
                 model_name=model_name,

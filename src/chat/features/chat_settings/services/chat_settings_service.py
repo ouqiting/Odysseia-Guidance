@@ -12,6 +12,7 @@ from src.chat.services.openai_fallback_service import (
     OPENAI_FALLBACK_SECONDARY_MODEL_KEY,
     OPENAI_FALLBACK_TERTIARY_MODEL_KEY,
     SUPPORTED_OPENAI_FALLBACK_MODELS,
+    OpenAIFallbackService,
 )
 
 log = logging.getLogger(__name__)
@@ -345,12 +346,15 @@ class ChatSettingsService:
         normalized_model = str(model or "").strip()
         if not normalized_model:
             return ""
-        if normalized_model not in SUPPORTED_OPENAI_FALLBACK_MODELS:
-            allowed = ", ".join(SUPPORTED_OPENAI_FALLBACK_MODELS)
-            raise ValueError(
-                f"OpenAI 回退渠道仅支持以下模型之一：{allowed}"
-            )
-        return normalized_model
+        if normalized_model in SUPPORTED_OPENAI_FALLBACK_MODELS:
+            return normalized_model
+        # 允许 custom-<preset_name> 形式：使用指定 custom 预设
+        if OpenAIFallbackService.is_custom_preset_channel(normalized_model):
+            return normalized_model
+        allowed = ", ".join(SUPPORTED_OPENAI_FALLBACK_MODELS)
+        raise ValueError(
+            f"OpenAI 回退渠道仅支持以下模型之一：{allowed}，或 custom-<预设名> 形式（例如 custom-vercel-kimi）"
+        )
 
     async def set_openai_fallback_models(
         self,

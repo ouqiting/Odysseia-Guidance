@@ -89,6 +89,34 @@ def test_preset_store_crud_lifecycle(tmp_path: Path):
     assert store.list_presets() == []
 
 
+def test_preset_store_lookup_by_name(tmp_path: Path):
+    store = CustomModelPresetStore(base_dir=str(tmp_path))
+    store.create_preset(
+        name="vercel-kimi",
+        settings=_build_settings(model_name="kimi-model"),
+    )
+    store.create_preset(
+        name="kimchi白嫖",
+        settings=_build_settings(model_name="kimchi-model"),
+    )
+
+    found = store.get_preset_by_name("vercel-kimi")
+    assert found is not None
+    assert found.name == "vercel-kimi"
+    assert found.custom_model_name == "kimi-model"
+
+    found_chinese = store.get_preset_by_name("kimchi白嫖")
+    assert found_chinese is not None
+    assert found_chinese.name == "kimchi白嫖"
+    assert found_chinese.custom_model_name == "kimchi-model"
+
+    # 不存在的预设返回 None
+    assert store.get_preset_by_name("nonexistent") is None
+    # 空名返回 None
+    assert store.get_preset_by_name("") is None
+    assert store.get_preset_by_name(None) is None
+
+
 def test_preset_store_can_rename_without_changing_content(tmp_path: Path):
     store = CustomModelPresetStore(base_dir=str(tmp_path))
     created = store.create_preset(name="旧名字", settings=_build_settings())

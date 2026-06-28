@@ -30,6 +30,12 @@ from src.chat.services.openai_models import (
     KimiModelClient,
 )
 from src.chat.services.openai_models.custom_model import CustomModelChannelError
+from src.chat.services.openai_fallback_service import OpenAIFallbackService
+from src.chat.features.chat_settings.services.custom_model_preset_store import (
+    CustomModelPreset,
+    CustomModelPresetNotFoundError,
+    CustomModelPresetStore,
+)
 from src.chat.utils.httpx_error_utils import build_request_error_log_fields
 from src.chat.services.prompt_service import prompt_service
 from src.chat.utils.image_utils import sanitize_image_to_size_limit
@@ -89,6 +95,59 @@ class OpenAIService:
             bot_getter=lambda: getattr(self.tool_service, "bot", None),
             alert_user_id=1046310552365973524,
         )
+        self.custom_model_preset_store = CustomModelPresetStore()
+
+    @staticmethod
+    def _is_custom_family_model(model_name: Optional[str]) -> bool:
+        """是否为 custom 渠道：`custom` 或 `custom-<preset_name>` 形式。"""
+        normalized = str(model_name or "").strip()
+        if normalized == "custom":
+            return True
+        return OpenAIFallbackService.is_custom_preset_channel(normalized)
+
+    def _resolve_custom_runtime_config(
+        self, model_name: Optional[str]
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """解析 custom 渠道的 runtime_config。
+
+        - `custom`：从当前 env 读取（refresh_from_env），与原行为一致。
+        - `custom-<preset_name>`：从对应预设构建，不修改全局 env。
+
+        返回 (runtime_config, normalized_model_name)；若配置无法解析则返回 (None, error_message)。
+        """
+        effective_model_name = str(model_name or "").strip()
+        if not effective_model_name.startswith("custom"):
+            return None, f"未知 custom 渠道：{effective_model_name}"
+
+        preset_name = OpenAIFallbackService.extract_custom_preset_name(
+            effective_model_name
+        )
+        if not preset_name:
+            # 纯 custom：使用当前启用的 custom 配置
+            return self.custom_model_client.refresh_from_env(), None
+
+        try:
+            preset = self.custom_model_preset_store.get_preset_by_name(preset_name)
+        except Exception as exc:
+            log.warning(
+                "[Custom] 加载预设失败 | preset_name=%s | error=%s",
+                preset_name,
+                exc,
+                exc_info=True,
+            )
+            return None, f"custom 预设 `{preset_name}` 加载失败：{exc}"
+
+        if preset is None:
+            return None, f"custom 预设 `{preset_name}` 不存在。"
+
+        runtime_config = self.custom_model_client.build_runtime_config_from_preset_settings(
+            custom_model_url=preset.custom_model_url,
+            custom_model_api_key=preset.custom_model_api_key,
+            custom_model_name=preset.custom_model_name,
+            custom_model_enable_vision=preset.custom_model_enable_vision,
+            custom_model_enable_video_input=preset.custom_model_enable_video_input,
+        )
+        return runtime_config, None
 
     @staticmethod
     def _normalize_bool_flag(raw_value: Optional[str]) -> bool:
@@ -365,7 +424,7 @@ class OpenAIService:
             "deepseek-v4-flash",
             "deepseek-v4-pro",
         }
-        is_custom_model = effective_model_name == "custom"
+        is_custom_model = self._is_custom_family_model(effective_model_name)
         is_kimi_model = effective_model_name == "kimi-k2.5"
 
         if not (is_deepseek_model or is_custom_model or is_kimi_model):
@@ -377,7 +436,16 @@ class OpenAIService:
 
         custom_runtime_config: Optional[Dict[str, Any]] = None
         if is_custom_model:
-            custom_runtime_config = self.custom_model_client.refresh_from_env()
+            custom_runtime_config, config_error = self._resolve_custom_runtime_config(
+                effective_model_name
+            )
+            if custom_runtime_config is None:
+                log.warning(
+                    "[Custom Simple] 无法解析 custom 渠道配置: %s | model=%s",
+                    config_error,
+                    effective_model_name,
+                )
+                return None
 
         if is_deepseek_model:
             channel_label = "DeepSeek"
@@ -709,12 +777,24 @@ class OpenAIService:
             "deepseek-v4-flash",
             "deepseek-v4-pro",
         }
-        is_custom_model = effective_model_name == "custom"
+        is_custom_model = self._is_custom_family_model(effective_model_name)
         is_kimi_model = effective_model_name == "kimi-k2.5"
         is_direct_openai_model = is_deepseek_model or is_custom_model
         custom_runtime_config: Optional[Dict[str, Any]] = None
         if is_custom_model:
-            custom_runtime_config = self.custom_model_client.refresh_from_env()
+            custom_runtime_config, config_error = self._resolve_custom_runtime_config(
+                effective_model_name
+            )
+            if custom_runtime_config is None:
+                raise OpenAIChannelExecutionFailure(
+                    channel_name=effective_model_name,
+                    user_message=(
+                        config_error
+                        or f"custom 渠道 `{effective_model_name}` 配置无法解析。"
+                    ),
+                    failure_kind="validation_error",
+                    should_lock_channel=True,
+                )
         custom_vision_enabled = bool(
             custom_runtime_config["enable_vision"] if custom_runtime_config else False
         )

@@ -634,6 +634,65 @@ class CustomModelClient:
         )
         return runtime_config
 
+    def build_runtime_config_from_preset_settings(
+        self,
+        *,
+        custom_model_url: str,
+        custom_model_api_key: str,
+        custom_model_name: str,
+        custom_model_enable_vision: str,
+        custom_model_enable_video_input: str,
+    ) -> Dict[str, Any]:
+        """根据 custom 预设的字段构建 runtime_config，不修改全局 env / .env。
+
+        网关/超时/编码等非预设字段回退使用当前 env 配置（与 refresh_from_env 一致），
+        从而保持与“当前启用 custom 配置”相同的行为，仅替换预设持有的 5 个字段。
+        """
+        base_runtime_config = self.get_runtime_config()
+
+        raw_api_key = str(custom_model_api_key or "").strip()
+        api_key_resolution_error: Optional[str] = None
+        resolved_api_keys: List[str] = []
+        api_key_source_type = "inline"
+        api_key_file_path: Optional[str] = None
+
+        try:
+            resolved_api_key_config = resolve_custom_model_api_keys(raw_api_key)
+            resolved_api_keys = list(resolved_api_key_config.api_keys)
+            api_key_source_type = resolved_api_key_config.source_type
+            api_key_file_path = resolved_api_key_config.file_path
+        except ValueError as exc:
+            api_key_resolution_error = str(exc)
+
+        api_key = self._serialize_api_keys(resolved_api_keys)
+        return {
+            "base_url": str(custom_model_url or "").strip(),
+            "api_key": api_key,
+            "api_keys": resolved_api_keys,
+            "api_key_source_type": api_key_source_type,
+            "api_key_source_value": raw_api_key,
+            "api_key_file_path": api_key_file_path,
+            "api_key_error": api_key_resolution_error,
+            "model_name": str(custom_model_name or "").strip(),
+            "enable_vision": self._normalize_bool_flag(custom_model_enable_vision),
+            "enable_video_input": self._normalize_bool_flag(
+                custom_model_enable_video_input
+            ),
+            "gateway_provider_timeout_ms": int(
+                base_runtime_config.get("gateway_provider_timeout_ms", 6000)
+            ),
+            "gateway_provider_name": str(
+                base_runtime_config.get("gateway_provider_name", "") or ""
+            ).strip(),
+            "stream_idle_timeout_seconds": float(
+                base_runtime_config.get("stream_idle_timeout_seconds", 5.0)
+            ),
+            "accept_encoding": base_runtime_config.get("accept_encoding"),
+            "timeout_detection_enabled": bool(
+                base_runtime_config.get("timeout_detection_enabled", True)
+            ),
+        }
+
     @staticmethod
     def _build_chat_completions_url(base_url: str) -> str:
         normalized = (base_url or "").rstrip("/")
