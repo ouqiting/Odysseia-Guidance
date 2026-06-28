@@ -1820,6 +1820,7 @@ class CustomModelClient:
             )
         request_payload["stream"] = True
         request_payload.pop("chat_template_kwargs", None)
+        request_payload["thinking"] = {"type": "disabled"}
         timeout_detection_enabled = bool(
             runtime_config.get("timeout_detection_enabled", True)
         )
