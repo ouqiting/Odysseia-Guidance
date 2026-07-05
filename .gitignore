@@ -308,3 +308,4 @@ web/gunicorn.ctl
 # backup files
 /src/backup/*
 !/src/backup/backup_manager.py
+!/src/backup/pg_backup_manager.py
