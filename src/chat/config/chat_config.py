@@ -322,6 +322,7 @@ AFFECTION_CONFIG = {
 FEEDING_CONFIG = {
     "COOLDOWN_SECONDS": 1,  # 5 minutes
     "RESPONSE_IMAGE_URL": "",  # 默认优先使用本地 assets 中的等待图和参考图兜底
+    "MODEL": "gemini-3.5-flash",  # 投喂时使用的文本模型
 }
 
 # --- 忏悔功能 ---

@@ -113,7 +113,7 @@ class FeedingCog(commands.Cog):
             prompt = f"{persona_part}\n\n{base_prompt}"
 
             response_text = await self.gemini_service.generate_text_with_image(
-                prompt=prompt, image_bytes=image_bytes, mime_type=image.content_type
+                prompt=prompt, image_bytes=image_bytes, mime_type=image.content_type, model_name=FEEDING_CONFIG.get("MODEL")
             )
 
             if not response_text:

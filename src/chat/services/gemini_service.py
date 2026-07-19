@@ -2079,7 +2079,7 @@ class GeminiService:
 
     @_api_key_handler
     async def generate_text_with_image(
-        self, prompt: str, image_bytes: bytes, mime_type: str, client: Any = None
+        self, prompt: str, image_bytes: bytes, mime_type: str, model_name: Optional[str] = None, client: Any = None
     ) -> Optional[str]:
         """
         一个用于简单图文生成的精简方法。
@@ -2133,7 +2133,7 @@ class GeminiService:
         )
 
         response = await client.aio.models.generate_content(
-            model=self.default_model_name, contents=request_contents, config=gen_config
+            model=model_name or self.default_model_name, contents=request_contents, config=gen_config
         )
 
         if response.parts:
