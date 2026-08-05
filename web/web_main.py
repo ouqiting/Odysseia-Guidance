@@ -2,6 +2,8 @@ import logging
 import os
 import re
 import sys
+import json
+import uuid
 import threading
 import time
 from collections import deque
@@ -12,7 +14,6 @@ import psutil
 from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-
 try:
     import docker
 except ImportError:
@@ -35,6 +36,15 @@ main_page_path = os.path.join(static_dir, "html", "main.html")
 
 web_app = FastAPI()
 web_app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+
+@web_app.middleware("http")
+async def no_cache_static(request: Request, call_next):
+    """静态文件一律不缓存，避免前端改动因浏览器缓存而看不到。"""
+    response = await call_next(request)
+    if request.url.path.startswith("/static"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 logger = logging.getLogger("webui")
 logger.setLevel(logging.INFO)
@@ -472,6 +482,150 @@ def restart_web(request: Request):
             {"status": "error", "message": str(exc)},
             status_code=500,
         )
+
+
+# --- 数据备份 API ----------------------------------------------------------
+
+BACKUP_BOT_CONTAINER = os.getenv("BOT_CONTAINER_NAME", "Odysseia_Guidance")
+BACKUP_JOBS: dict[str, dict] = {}
+BACKUP_JOBS_LOCK = threading.Lock()
+
+
+def _docker_exec(container_name: str, cmd, env=None, timeout=3600):
+    """在指定容器内执行命令，返回 (exit_code, stdout+stderr bytes)。"""
+    if docker is None:
+        raise RuntimeError("Python package 'docker' is not installed.")
+    client = docker.from_env()
+    container = client.containers.get(container_name)
+    result = container.exec_run(
+        cmd,
+        environment=env,
+        stdout=True,
+        stderr=True,
+        stream=False,
+    )
+    return result.exit_code, result.output
+
+
+def _decode_output(output: Any) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace")
+    return str(output)
+
+
+def _last_json_line(output: str) -> dict:
+    for line in reversed(output.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except json.JSONDecodeError:
+                continue
+    return {"status": "error", "message": output[-500:] or "无输出"}
+
+
+def _run_backup_job(job_id: str):
+    record = BACKUP_JOBS[job_id]
+    record["status"] = "running"
+    record["started"] = datetime.utcnow().isoformat()
+    try:
+        exit_code, output = _docker_exec(
+            BACKUP_BOT_CONTAINER,
+            ["python3", "-u", "-m", "src.backup.backup_ctl", "run"],
+            timeout=3600,
+        )
+        record["log"] = _decode_output(output)[-12000:]
+        record["exit_code"] = exit_code
+        record["status"] = "success" if exit_code == 0 else "error"
+    except Exception as exc:
+        record["status"] = "error"
+        record["log"] = str(exc)
+    finally:
+        record["finished"] = datetime.utcnow().isoformat()
+
+
+@web_app.get("/api/backup/status")
+def get_backup_status(request: Request):
+    if not is_logged_in(request):
+        return unauthorized_response(api=True)
+    try:
+        exit_code, output = _docker_exec(
+            BACKUP_BOT_CONTAINER,
+            ["python3", "-m", "src.backup.backup_ctl", "status"],
+            timeout=60,
+        )
+        payload = _last_json_line(_decode_output(output))
+        if exit_code != 0 and "config" not in payload:
+            payload["warning"] = "backup_ctl status 返回非零退出码"
+    except Exception as exc:
+        logger.error(f"Error in get_backup_status: {exc}")
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
+
+    with BACKUP_JOBS_LOCK:
+        jobs = []
+        for idx, rec in enumerate(list(BACKUP_JOBS.values())[-10:]):
+            job_view = {
+                "job_id": rec["job_id"],
+                "status": rec["status"],
+                "running": rec["running"],
+                "started": rec["started"],
+                "finished": rec["finished"],
+            }
+            if idx == 0:
+                job_view["log"] = rec.get("log", "")
+            jobs.append(job_view)
+    payload["jobs"] = jobs
+    return JSONResponse(payload)
+
+
+@web_app.post("/api/backup/run")
+def run_backup(request: Request):
+    if not is_logged_in(request):
+        return unauthorized_response(api=True)
+    job_id = uuid.uuid4().hex
+    record = {
+        "job_id": job_id,
+        "status": "queued",
+        "running": True,
+        "log": "",
+        "started": "",
+        "finished": "",
+        "exit_code": None,
+    }
+    with BACKUP_JOBS_LOCK:
+        BACKUP_JOBS[job_id] = record
+    threading.Thread(target=_run_backup_job, args=(job_id,), daemon=True).start()
+    return JSONResponse({"job_id": job_id, "status": "queued"})
+
+
+@web_app.post("/api/backup/config")
+async def save_backup_config(request: Request):
+    if not is_logged_in(request):
+        return unauthorized_response(api=True)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            {"status": "error", "message": "请求体必须是 JSON"},
+            status_code=400,
+        )
+    env_json = {str(k): v for k, v in body.items() if v is not None}
+    try:
+        exit_code, output = _docker_exec(
+            BACKUP_BOT_CONTAINER,
+            ["python3", "-m", "src.backup.backup_ctl", "save_config"],
+            env={"BACKUP_ENV_JSON": json.dumps(env_json)},
+            timeout=60,
+        )
+    except Exception as exc:
+        logger.error(f"Error in save_backup_config: {exc}")
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
+    payload = _last_json_line(_decode_output(output))
+    if exit_code != 0:
+        payload["status"] = "error"
+    return JSONResponse(payload)
 
 
 @web_app.get("/api/logs")

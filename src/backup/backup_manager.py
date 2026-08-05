@@ -3,7 +3,7 @@
 import os
 import shutil
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 log = logging.getLogger(__name__)
 
@@ -18,6 +18,11 @@ BACKUP_DIR = os.path.join(BASE_DIR, "src", "backup")
 DB_EXTENSIONS = (".db", ".sqlite3")
 
 
+def _get_keep_days() -> int:
+    """备份保留天数（含今天），默认 3 天。"""
+    return int(os.getenv("BACKUP_KEEP_DAYS", "3") or 3)
+
+
 def _get_backup_output_mount_path() -> str:
     """返回容器内用于接收外部备份挂载的路径。"""
     return os.getenv("BACKUP_OUTPUT_MOUNT_PATH", "/backup-output")
@@ -25,18 +30,27 @@ def _get_backup_output_mount_path() -> str:
 
 def _is_managed_backup_file(filename: str) -> bool:
     """判断文件是否属于本模块管理的备份文件。"""
-    return ".bak." in filename
+    return ".bak." in filename or ".pgbak." in filename
 
 
-def _cleanup_old_backups(target_dir: str, backup_date_format: str):
-    """清理目标目录中的过期备份，仅保留当天日期的备份文件。"""
+def _allowed_backup_dates(days: int) -> set:
+    """返回最近 days 天（含今天）的 YYYYMMDD 集合，用于保留判定。"""
+    today = datetime.now()
+    return {
+        (today - timedelta(days=i)).strftime("%Y%m%d")
+        for i in range(max(1, days))
+    }
+
+
+def _cleanup_old_backups(target_dir: str, allowed_dates: set):
+    """清理目标目录中的过期备份，仅保留 allowed_dates 中的日期。"""
     if not os.path.isdir(target_dir):
         return
 
     for filename in os.listdir(target_dir):
         if not _is_managed_backup_file(filename):
             continue
-        if backup_date_format in filename:
+        if any(date_str in filename for date_str in allowed_dates):
             continue
 
         file_to_delete = os.path.join(target_dir, filename)
@@ -47,7 +61,7 @@ def _cleanup_old_backups(target_dir: str, backup_date_format: str):
             log.error(f"删除过期备份 '{file_to_delete}' 失败: {e}", exc_info=True)
 
 
-def _sync_backups_to_output_dir(backup_date_format: str):
+def _sync_backups_to_output_dir(allowed_dates: set):
     """
     可选地将备份复制到 BACKUP_OUTPUT_DIR 对应目录。
 
@@ -80,25 +94,26 @@ def _sync_backups_to_output_dir(backup_date_format: str):
         src_path = os.path.join(BACKUP_DIR, filename)
         dst_path = os.path.join(target_dir, filename)
         try:
+            if os.path.getsize(src_path) == 0:
+                log.warning(f"跳过空备份文件（同步）：'{src_path}'")
+                continue
             shutil.copy2(src_path, dst_path)
             log.info(f"已同步备份文件到输出目录: '{dst_path}'")
         except Exception as e:
             log.error(f"同步备份文件失败 '{filename}' -> '{target_dir}': {e}", exc_info=True)
 
-    _cleanup_old_backups(target_dir, backup_date_format)
+    _cleanup_old_backups(target_dir, allowed_dates)
 
 
 def backup_databases():
     """
     将所有数据库文件备份到 src/backup 目录，并清理旧备份。
-    只保留当天的备份。
+    仅保留最近 _get_keep_days() 天的备份。
     """
     # 确保备份目录存在
     os.makedirs(BACKUP_DIR, exist_ok=True)
 
-    today = datetime.now()
-    # 今天备份文件的日期格式
-    backup_date_format = today.strftime("%Y%m%d")
+    allowed_dates = _allowed_backup_dates(_get_keep_days())
 
     log.info("开始执行数据库备份任务...")
 
@@ -111,7 +126,7 @@ def backup_databases():
                 continue
 
             source_path = os.path.join(DATA_DIR, filename)
-            backup_filename = f"{filename}.bak.{backup_date_format}"
+            backup_filename = f"{filename}.bak.{datetime.now().strftime('%Y%m%d')}"
             destination_path = os.path.join(BACKUP_DIR, backup_filename)
 
             try:
@@ -122,10 +137,10 @@ def backup_databases():
 
     # --- 步骤 2: 清理过期的本地备份 ---
     log.info("开始清理过期备份...")
-    _cleanup_old_backups(BACKUP_DIR, backup_date_format)
+    _cleanup_old_backups(BACKUP_DIR, allowed_dates)
 
     # --- 步骤 3: 可选同步到外部备份目录 ---
-    _sync_backups_to_output_dir(backup_date_format)
+    _sync_backups_to_output_dir(allowed_dates)
 
     log.info("数据库备份与清理任务完成。")
 

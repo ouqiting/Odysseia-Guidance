@@ -10,7 +10,7 @@ import requests
 from discord.ext import commands
 from datetime import datetime, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from src.backup.backup_manager import backup_databases
+from src.backup.daily_backup import run_daily_backup
 from src.runtime_env import load_project_dotenv
 
 # 在所有其他导入之前，尽早加载环境变量
@@ -612,9 +612,16 @@ async def main():
 
     log.info("已加载并注册 AI 工具。")
 
-    # 启动定时备份任务
+    # 启动定时备份任务（BACKUP_CRON="时:分"，默认 0:0；修改后需重启 Bot 生效）
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(backup_databases, "cron", hour=0, minute=0)
+    try:
+        _backup_hour_str, _backup_minute_str = os.getenv("BACKUP_CRON", "0:0").split(":")
+        _backup_hour, _backup_minute = int(_backup_hour_str), int(_backup_minute_str)
+    except Exception:
+        _backup_hour, _backup_minute = 0, 0
+    scheduler.add_job(
+        run_daily_backup, "cron", hour=_backup_hour, minute=_backup_minute
+    )
     scheduler.start()
     log.info("已启动每日数据库备份任务。")
 

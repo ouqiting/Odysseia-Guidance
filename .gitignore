@@ -309,3 +309,6 @@ web/gunicorn.ctl
 /src/backup/*
 !/src/backup/backup_manager.py
 !/src/backup/pg_backup_manager.py
+!/src/backup/cloud_upload.py
+!/src/backup/daily_backup.py
+!/src/backup/backup_ctl.py

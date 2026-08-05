@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Odysseia Guidance Console</title>
-    <link rel="stylesheet" href="/static/css/main.css">
+    <link rel="stylesheet" href="/static/css/main.css?v=20260805b">
 </head>
 <body>
     <div class="app-shell">
@@ -52,6 +52,13 @@
                     <span class="nav-text">
                         <strong>WebUI 日志</strong>
                         <small>服务侧运行情况</small>
+                    </span>
+                </button>
+                <button class="nav-item" type="button" data-view="backup">
+                    <span class="nav-index">06</span>
+                    <span class="nav-text">
+                        <strong>数据备份</strong>
+                        <small>备份状态与 R2 配置</small>
                     </span>
                 </button>
             </nav>
@@ -352,6 +359,108 @@
                     <div class="log-container" id="webui-log-container" role="log" aria-live="off" spellcheck="false">Loading WebUI logs...</div>
                 </article>
             </section>
+
+            <section class="view-panel" data-view-panel="backup">
+                <article class="content-card">
+                    <div class="section-heading">
+                        <div>
+                            <h2>数据备份</h2>
+                        </div>
+                        <div class="inline-status status-loading" id="backup-status-badge">检测中</div>
+                    </div>
+
+                    <div class="control-layout">
+                        <div class="action-panel">
+                            <button id="backup-run-btn" class="primary-button" type="button">立即备份</button>
+                            <button id="backup-refresh-btn" class="soft-button" type="button">刷新状态</button>
+                        </div>
+                        <div class="info-list">
+                            <div class="info-row">
+                                <span>定时计划</span>
+                                <strong id="backup-schedule-text">-</strong>
+                            </div>
+                            <div class="info-row">
+                                <span>保留天数</span>
+                                <strong id="backup-keep-days-text">-</strong>
+                            </div>
+                            <div class="info-row">
+                                <span>R2 上传</span>
+                                <strong id="backup-r2-text">未配置</strong>
+                            </div>
+                            <div class="info-row">
+                                <span>最近任务</span>
+                                <strong id="backup-last-job-text">无</strong>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="section-heading panel-subheading">
+                        <div>
+                            <h3>最近备份文件</h3>
+                        </div>
+                    </div>
+                    <div class="info-list" id="backup-files-container">
+                        <div class="info-row"><span>暂无备份</span><strong>-</strong></div>
+                    </div>
+
+                    <div class="section-heading panel-subheading backup-config-toggle" id="backup-config-toggle" role="button" tabindex="0" title="展开/收起 R2 配置">
+                        <div>
+                            <h3>Cloudflare R2 配置</h3>
+                            <small class="file-time-backup">默认收起，点击展开</small>
+                        </div>
+                        <span class="backup-collapse-icon" id="backup-config-chevron">▸</span>
+                    </div>
+                    <div class="backup-config-body is-collapsed" id="backup-config-body">
+                    <div class="toolbar-grid">
+                        <label class="field">
+                            <span>账户 ID (Account ID)</span>
+                            <input type="text" id="backup-r2-account" placeholder="R2_ACCOUNT_ID">
+                        </label>
+                        <label class="field">
+                            <span>存储桶 (Bucket)</span>
+                            <input type="text" id="backup-r2-bucket" placeholder="R2_BUCKET">
+                        </label>
+                        <label class="field">
+                            <span>前缀 (Prefix)</span>
+                            <input type="text" id="backup-r2-prefix" placeholder="odysseia/backup/">
+                        </label>
+                        <label class="field">
+                            <span>Access Key ID</span>
+                            <input type="text" id="backup-r2-ak" placeholder="R2_ACCESS_KEY_ID">
+                        </label>
+                        <label class="field">
+                            <span>Secret Access Key</span>
+                            <input type="password" id="backup-r2-sk" placeholder="R2_SECRET_ACCESS_KEY">
+                        </label>
+                        <label class="field">
+                            <span>保留天数</span>
+                            <input type="number" id="backup-keep-days" min="1" value="3">
+                        </label>
+                        <label class="field">
+                            <span>每日定时 (时:分)</span>
+                            <input type="text" id="backup-schedule" placeholder="0:0">
+                        </label>
+                        <div class="field">
+                            <span>操作</span>
+                            <div class="toolbar-actions">
+                                <button id="backup-save-btn" class="soft-button" type="button">保存配置</button>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="panel-meta" id="backup-save-result">保存后无需重启，下次备份立即生效；定时计划需重启 Bot 生效</div>
+                    </div>
+
+                    <div class="section-heading panel-subheading">
+                        <div>
+                            <h3>备份日志</h3>
+                        </div>
+                        <div class="toolbar-actions">
+                            <button id="backup-auto-scroll-toggle" class="soft-button toolbar-toggle" type="button" aria-pressed="false">自动跳转底部</button>
+                        </div>
+                    </div>
+                    <pre class="log-container backup-log" id="backup-log-container">等待执行</pre>
+                </article>
+            </section>
         </main>
     </div>
 
@@ -372,6 +481,9 @@ document.addEventListener('DOMContentLoaded', () => {
         },
         'webui-logs': {
             title: 'WebUI 日志'
+        },
+        backup: {
+            title: '数据备份'
         }
     };
 
@@ -412,6 +524,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const controlLastAction = document.getElementById('control-last-action');
     const controlSyncText = document.getElementById('control-sync-text');
 
+    const backupStatusBadge = document.getElementById('backup-status-badge');
+    const backupRunBtn = document.getElementById('backup-run-btn');
+    const backupRefreshBtn = document.getElementById('backup-refresh-btn');
+    const backupSaveBtn = document.getElementById('backup-save-btn');
+    const backupLogContainer = document.getElementById('backup-log-container');
+    const backupAutoScrollToggle = document.getElementById('backup-auto-scroll-toggle');
+    const backupFilesContainer = document.getElementById('backup-files-container');
+    const backupLastJobText = document.getElementById('backup-last-job-text');
+    const backupR2Text = document.getElementById('backup-r2-text');
+    const backupConfigToggle = document.getElementById('backup-config-toggle');
+    const backupConfigBody = document.getElementById('backup-config-body');
+    const backupConfigChevron = document.getElementById('backup-config-chevron');
+
     let fullBotLogEntries = [];
     let fullWebUILogEntries = [];
     let selectedTimezone = localStorage.getItem('selectedTimezone') || Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -422,6 +547,12 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentView = 'dashboard';
     let lastBotLogId = 0;
     let lastWebUILogId = 0;
+    let backupPollingTimer = null;
+    let backupActiveJobId = null;
+    let lastBackupStatus = null;
+    let backupConfigFormLoaded = false;
+    let backupConfigOpen = false;
+    let backupAutoScrollEnabled = false;
     let botCurrentFile = '';
     let botNextBeforeFile = null;
     let botLoadedFileCount = 0;
@@ -711,6 +842,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (viewName === 'webui-logs') {
             fetchWebUILogs(true);
+        }
+        if (viewName === 'backup') {
+            fetchBackupStatus(true);
         }
 
         if (isMobileLayout() && mobileSidebarOpen) {
@@ -1122,6 +1256,190 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    const formatFileSize = (bytes) => {
+        if (!Number.isFinite(bytes) || bytes < 0) {
+            return '-';
+        }
+        if (bytes < 1024) {
+            return `${bytes} B`;
+        }
+        if (bytes < 1024 * 1024) {
+            return `${(bytes / 1024).toFixed(1)} KB`;
+        }
+        return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+    };
+
+    const setBackupBadge = (text, state) => {
+        backupStatusBadge.textContent = text;
+        backupStatusBadge.className = `inline-status ${state}`;
+    };
+
+    const renderBackupFiles = (files) => {
+        if (!Array.isArray(files) || !files.length) {
+            backupFilesContainer.innerHTML = '<div class="info-row"><span>暂无备份</span><strong>-</strong></div>';
+            return;
+        }
+        const recent = files.slice(-7).reverse();
+        backupFilesContainer.innerHTML = recent.map((file) => {
+            const kind = file.name.includes('.pgbak.') ? 'PG' : 'SQLite';
+            const timeText = file.mtime
+                ? new Date(file.mtime * 1000).toLocaleString(undefined, { hour12: false })
+                : '';
+            return `<div class="info-row">
+                <span>${escapeHtml(file.name)} <em class="file-kind">(${kind})</em></span>
+                <strong>${formatFileSize(file.size)}<small class="file-time"> ${escapeHtml(timeText)}</small></strong>
+            </div>`;
+        }).join('');
+    };
+
+    const updateBackupConfigSummary = (config) => {
+        if (!config) {
+            return;
+        }
+        document.getElementById('backup-schedule-text').textContent = config.schedule || '-';
+        document.getElementById('backup-keep-days-text').textContent = `${config.keep_days || 3} 天`;
+        backupR2Text.textContent = config.r2_configured
+            ? `已配置 (${config.r2_account || '-'}/${config.r2_bucket || '-'})`
+            : '未配置';
+        backupR2Text.classList.toggle('text-ok', Boolean(config.r2_configured));
+    };
+
+    const populateBackupConfigForm = (config) => {
+        if (!config) {
+            return;
+        }
+        document.getElementById('backup-r2-account').value = config.r2_account || '';
+        document.getElementById('backup-r2-bucket').value = config.r2_bucket || '';
+        document.getElementById('backup-r2-prefix').value = config.r2_prefix || '';
+        document.getElementById('backup-r2-ak').value = config.access_key || '';
+        document.getElementById('backup-r2-sk').value = config.secret || '';
+        document.getElementById('backup-keep-days').value = config.keep_days || 3;
+        document.getElementById('backup-schedule').value = config.schedule || '0:0';
+    };
+
+    const updateBackupLog = (jobs) => {
+        if (!Array.isArray(jobs) || !jobs.length) {
+            return;
+        }
+        const latest = jobs[0];
+        if (latest.job_id !== backupActiveJobId) {
+            backupActiveJobId = latest.job_id;
+        }
+        if (latest.status === 'running') {
+            setBackupBadge('备份进行中', 'status-running');
+            backupRunBtn.disabled = true;
+            backupLastJobText.textContent = '备份进行中...';
+        } else if (latest.status === 'success') {
+            setBackupBadge('备份成功', 'status-running');
+            backupRunBtn.disabled = false;
+            backupLastJobText.textContent = `上次成功: ${formatTimestamp(new Date(latest.finished))}`;
+        } else if (latest.status === 'error') {
+            setBackupBadge('备份失败', 'status-down');
+            backupRunBtn.disabled = false;
+            backupLastJobText.textContent = `上次失败: ${formatTimestamp(new Date(latest.finished))}`;
+        }
+    };
+
+    const fetchBackupStatus = async (force = false) => {
+        try {
+            const response = await fetch('/api/backup/status', { cache: 'no-store' });
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            const data = await response.json();
+            if (data.status === 'error' && !data.config) {
+                throw new Error(data.message || '获取备份状态失败');
+            }
+            lastBackupStatus = data;
+            updateBackupConfigSummary(data.config);
+            if (!backupConfigFormLoaded || force) {
+                populateBackupConfigForm(data.config);
+                backupConfigFormLoaded = true;
+            }
+            renderBackupFiles(data.files);
+            updateBackupLog(data.jobs);
+
+            const running = Array.isArray(data.jobs) && data.jobs.some((job) => job.status === 'running');
+            if (currentView === 'backup') {
+                if (running) {
+                    setBackupBadge('备份进行中', 'status-running');
+                    backupRunBtn.disabled = true;
+                } else if (!backupRunBtn.disabled && force) {
+                    setBackupBadge('就绪', 'status-running');
+                }
+                if (backupActiveJobId && lastBackupStatus && lastBackupStatus.jobs) {
+                    const latest = lastBackupStatus.jobs[0];
+                    if (latest && latest.job_id === backupActiveJobId && latest.status !== 'running') {
+                        backupLogContainer.textContent = latest.log ? latest.log.trim() : '（无输出）';
+                        if (backupAutoScrollEnabled) {
+                            backupLogContainer.scrollTop = backupLogContainer.scrollHeight;
+                        }
+                    }
+                }
+            }
+        } catch (error) {
+            if (currentView === 'backup') {
+                setBackupBadge('状态获取失败', 'status-down');
+                backupLogContainer.textContent = `获取备份状态失败: ${error.message}`;
+            }
+        }
+    };
+
+    const startBackup = async () => {
+        const confirmed = confirm('确认现在立即执行一次完整备份（PG + SQLite + 上传 R2）吗？');
+        if (!confirmed) {
+            return;
+        }
+        try {
+            backupRunBtn.disabled = true;
+            setBackupBadge('正在提交...', 'status-loading');
+            backupLogContainer.textContent = '备份任务已提交，正在执行...';
+            const response = await fetch('/api/backup/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' }
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.message || '提交备份失败');
+            }
+            backupActiveJobId = data.job_id;
+            setBackupBadge('备份进行中', 'status-running');
+            backupPollingTimer = setTimeout(() => fetchBackupStatus(), 2000);
+        } catch (error) {
+            setBackupBadge('提交失败', 'status-down');
+            backupRunBtn.disabled = false;
+            backupLogContainer.textContent = `提交备份失败: ${error.message}`;
+        }
+    };
+
+    const saveBackupConfig = async () => {
+        const payload = {
+            R2_ACCOUNT_ID: document.getElementById('backup-r2-account').value.trim(),
+            R2_BUCKET: document.getElementById('backup-r2-bucket').value.trim(),
+            R2_PREFIX: document.getElementById('backup-r2-prefix').value.trim(),
+            R2_ACCESS_KEY_ID: document.getElementById('backup-r2-ak').value.trim(),
+            R2_SECRET_ACCESS_KEY: document.getElementById('backup-r2-sk').value.trim(),
+            BACKUP_KEEP_DAYS: document.getElementById('backup-keep-days').value.trim(),
+            BACKUP_CRON: document.getElementById('backup-schedule').value.trim()
+        };
+        const resultText = document.getElementById('backup-save-result');
+        try {
+            const response = await fetch('/api/backup/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (!response.ok || data.status !== 'ok') {
+                throw new Error(data.message || '保存失败');
+            }
+            resultText.textContent = `保存成功：${data.updated.join(', ')}`;
+            fetchBackupStatus();
+        } catch (error) {
+            resultText.textContent = `保存失败：${error.message}`;
+        }
+    };
+
     navItems.forEach((item) => {
         item.addEventListener('click', () => setActiveView(item.dataset.view));
     });
@@ -1181,6 +1499,31 @@ document.addEventListener('DOMContentLoaded', () => {
     restartBtn.addEventListener('click', () => sendControlCommand('restart'));
     restartWebBtn.addEventListener('click', () => sendControlCommand('restart_web'));
     shutdownBtn.addEventListener('click', () => sendControlCommand('shutdown'));
+    const setBackupConfigOpen = (open) => {
+        backupConfigOpen = open;
+        backupConfigBody.classList.toggle('is-collapsed', !open);
+        backupConfigChevron.textContent = open ? '▾' : '▸';
+        backupConfigToggle.setAttribute('aria-expanded', String(open));
+    };
+
+    backupConfigToggle.addEventListener('click', () => setBackupConfigOpen(!backupConfigOpen));
+    backupConfigToggle.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            setBackupConfigOpen(!backupConfigOpen);
+        }
+    });
+
+    backupRunBtn.addEventListener('click', startBackup);
+    backupRefreshBtn.addEventListener('click', () => fetchBackupStatus(true));
+    backupSaveBtn.addEventListener('click', saveBackupConfig);
+    backupAutoScrollToggle.addEventListener('click', () => {
+        backupAutoScrollEnabled = !backupAutoScrollEnabled;
+        toggleAutoScroll(backupAutoScrollToggle, backupAutoScrollEnabled);
+        if (backupAutoScrollEnabled) {
+            backupLogContainer.scrollTop = backupLogContainer.scrollHeight;
+        }
+    });
     document.addEventListener('selectionchange', flushPendingLogRender);
 
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyThemeLabel);
@@ -1192,11 +1535,13 @@ document.addEventListener('DOMContentLoaded', () => {
     applyThemePreference();
     toggleAutoScroll(botAutoScrollToggle, botAutoScrollEnabled);
     toggleAutoScroll(webuiAutoScrollToggle, webuiAutoScrollEnabled);
+    toggleAutoScroll(backupAutoScrollToggle, backupAutoScrollEnabled);
     document.getElementById('dashboard-log-count-text').textContent = '--';
     document.getElementById('dashboard-log-lines-text').textContent = '按需加载';
     updateBotLoadMoreButton();
     document.getElementById('dashboard-webui-count-text').textContent = '--';
     document.getElementById('dashboard-webui-state-text').textContent = '按需加载';
+    setBackupConfigOpen(false);
     setActiveView('dashboard');
     fetchBotStatus();
     fetchSystemInfo();
@@ -1214,6 +1559,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (currentView === 'webui-logs') {
             fetchWebUILogs();
         }
+        if (currentView === 'backup') {
+            fetchBackupStatus();
+        }
     }, 3000);
     setInterval(() => {
         if (botAutoScrollEnabled && !isSelectionInside(botLogContainer)) {
@@ -1221,6 +1569,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (webuiAutoScrollEnabled && !isSelectionInside(webuiLogContainer)) {
             scrollLogToBottom(webuiLogContainer);
+        }
+        if (backupAutoScrollEnabled && !isSelectionInside(backupLogContainer)) {
+            scrollLogToBottom(backupLogContainer);
         }
     }, 500);
 });
