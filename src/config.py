@@ -81,6 +81,6 @@ AVAILABLE_AI_MODELS = [
     "gemini-3-flash-custom",
     "deepseek-v4-flash",
     "deepseek-v4-pro",
-    "kimi-k2.5",
+    "kimi-k2.6",
     "custom",
 ]

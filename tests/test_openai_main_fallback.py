@@ -32,12 +32,12 @@ async def test_main_reply_uses_next_channel_after_same_day_failure(
     fallback_states = [
         OpenAIFallbackState(
             date="2026-05-18",
-            order=["custom", "deepseek-v4-flash", "kimi-k2.5"],
+            order=["custom", "deepseek-v4-flash", "kimi-k2.6"],
             failed_channels=[],
         ),
         OpenAIFallbackState(
             date="2026-05-18",
-            order=["custom", "deepseek-v4-flash", "kimi-k2.5"],
+            order=["custom", "deepseek-v4-flash", "kimi-k2.6"],
             failed_channels=["custom"],
         ),
     ]
@@ -48,7 +48,7 @@ async def test_main_reply_uses_next_channel_after_same_day_failure(
     mark_channel_failed = AsyncMock(
         return_value=OpenAIFallbackState(
             date="2026-05-18",
-            order=["custom", "deepseek-v4-flash", "kimi-k2.5"],
+            order=["custom", "deepseek-v4-flash", "kimi-k2.6"],
             failed_channels=["custom"],
         )
     )
@@ -140,7 +140,7 @@ async def test_main_reply_continues_to_third_channel_after_unexpected_exception(
 
     fallback_state = OpenAIFallbackState(
         date="2026-05-20",
-        order=["custom", "kimi-k2.5", "deepseek-v4-flash"],
+        order=["custom", "kimi-k2.6", "deepseek-v4-flash"],
         failed_channels=[],
     )
 
@@ -201,7 +201,7 @@ async def test_main_reply_continues_to_third_channel_after_unexpected_exception(
     assert result == "third channel ok"
     assert [
         call.kwargs["model_name"] for call in execute_channel_response.await_args_list
-    ] == ["custom", "kimi-k2.5", "deepseek-v4-flash"]
+    ] == ["custom", "kimi-k2.6", "deepseek-v4-flash"]
     assert mark_channel_failed.await_count == 2
 
 
@@ -214,7 +214,7 @@ async def test_main_reply_does_not_fallback_on_non_locking_channel_error(
 
     fallback_state = OpenAIFallbackState(
         date="2026-05-23",
-        order=["custom", "kimi-k2.5", "deepseek-v4-flash"],
+        order=["custom", "kimi-k2.6", "deepseek-v4-flash"],
         failed_channels=[],
     )
 

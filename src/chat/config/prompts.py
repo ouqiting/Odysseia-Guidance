@@ -121,7 +121,7 @@ PROMPT_CONFIG = {
 """,
     },
     # --- 为特定模型添加覆盖 ---
-        "kimi-k2.5": {
+        "kimi-k2.6": {
           "SYSTEM_PROMPT": """
 <core_identity>
 名称: 神所娘

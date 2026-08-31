@@ -36,7 +36,7 @@ class KimiModelClient:
 
         self.moonshot_url = os.getenv("MOONSHOT_URL")
         self.moonshot_key = os.getenv("MOONSHOT_API_KEY")
-        self.model_name = "kimi-k2.5"
+        self.model_name = "kimi-k2.6"
 
         self.custom_moonshot_url = os.getenv("CUSTOM_MOONSHOT_URL")
         self.custom_moonshot_api_key = os.getenv("CUSTOM_MOONSHOT_API_KEY")
@@ -112,7 +112,7 @@ class KimiModelClient:
         if self.has_configured_keys:
             return None
 
-        log.warning("请求使用 kimi-k2.5 但未配置 MOONSHOT_URL 或 MOONSHOT_API_KEY。")
+        log.warning("请求使用 kimi-k2.6 但未配置 MOONSHOT_URL 或 MOONSHOT_API_KEY。")
         return "Kimi 配置缺失，请检查 MOONSHOT_URL 与 MOONSHOT_API_KEY 环境变量。"
 
     def get_request_model_name(self) -> str:

@@ -197,7 +197,7 @@ MODEL_GENERATION_CONFIG = {
         "top_k": 40,
         "max_output_tokens": 8192,
     },
-    "kimi-k2.5": {
+    "kimi-k2.6": {
         "temperature": 0.6,
     },
     "custom":{

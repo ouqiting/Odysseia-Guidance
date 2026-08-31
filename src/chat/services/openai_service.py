@@ -425,7 +425,7 @@ class OpenAIService:
             "deepseek-v4-pro",
         }
         is_custom_model = self._is_custom_family_model(effective_model_name)
-        is_kimi_model = effective_model_name == "kimi-k2.5"
+        is_kimi_model = effective_model_name == "kimi-k2.6"
 
         if not (is_deepseek_model or is_custom_model or is_kimi_model):
             log.warning(
@@ -778,7 +778,7 @@ class OpenAIService:
             "deepseek-v4-pro",
         }
         is_custom_model = self._is_custom_family_model(effective_model_name)
-        is_kimi_model = effective_model_name == "kimi-k2.5"
+        is_kimi_model = effective_model_name == "kimi-k2.6"
         is_direct_openai_model = is_deepseek_model or is_custom_model
         custom_runtime_config: Optional[Dict[str, Any]] = None
         if is_custom_model:

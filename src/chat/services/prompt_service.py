@@ -40,7 +40,7 @@ class PromptService:
         """
         将模型配置键规范化为模型名列表。
         支持：
-        - "kimi-k2.5"
+        - "kimi-k2.6"
         - "deepseek-v4-flash, deepseek-v4-pro, custom"
         - ("deepseek-v4-flash", "deepseek-v4-pro", "custom")
         """
@@ -447,7 +447,7 @@ class PromptService:
         if mime_type != "image/gif" or not isinstance(image_bytes, (bytes, bytearray)):
             return False
 
-        if model_name == "kimi-k2.5":
+        if model_name == "kimi-k2.6":
             return True
 
         if model_name == "custom":

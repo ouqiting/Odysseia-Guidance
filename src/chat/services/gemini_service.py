@@ -52,7 +52,7 @@ log = logging.getLogger(__name__)
 OPENAI_COMPATIBLE_MODELS = {
     "deepseek-v4-flash",
     "deepseek-v4-pro",
-    "kimi-k2.5",
+    "kimi-k2.6",
     "custom",
 }
 DEFAULT_OFFICIAL_KEY_ACQUIRE_TIMEOUT_SECONDS = max(
@@ -800,7 +800,7 @@ class GeminiService:
 
         # --- OpenAI 兼容专用路由（DeepSeek / Kimi / Custom） ---
         is_openai_compatible_route = (
-            model_name in ["deepseek-v4-flash", "deepseek-v4-pro", "kimi-k2.5"]
+            model_name in ["deepseek-v4-flash", "deepseek-v4-pro", "kimi-k2.6"]
             or OpenAIFallbackService.is_supported_model(model_name)
             or OpenAIFallbackService.is_custom_preset_channel(model_name)
         )

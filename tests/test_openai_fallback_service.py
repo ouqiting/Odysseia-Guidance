@@ -28,9 +28,9 @@ async def test_build_channel_order_requires_full_three_channel_chain():
     order = OpenAIFallbackService.build_channel_order(
         "custom",
         "deepseek-v4-flash",
-        "kimi-k2.5",
+        "kimi-k2.6",
     )
-    assert order == ["custom", "deepseek-v4-flash", "kimi-k2.5"]
+    assert order == ["custom", "deepseek-v4-flash", "kimi-k2.6"]
 
     duplicated_order = OpenAIFallbackService.build_channel_order(
         "custom",
@@ -42,7 +42,7 @@ async def test_build_channel_order_requires_full_three_channel_chain():
     unsupported_order = OpenAIFallbackService.build_channel_order(
         "gemini-2.5-flash",
         "custom",
-        "kimi-k2.5",
+        "kimi-k2.6",
     )
     assert unsupported_order == []
 
@@ -74,7 +74,7 @@ def test_extract_custom_preset_name_splits_on_first_dash():
 def test_is_supported_fallback_channel_accepts_custom_preset_for_secondary():
     # 基础模型仍受支持
     assert OpenAIFallbackService.is_supported_fallback_channel("deepseek-v4-flash") is True
-    assert OpenAIFallbackService.is_supported_fallback_channel("kimi-k2.5") is True
+    assert OpenAIFallbackService.is_supported_fallback_channel("kimi-k2.6") is True
     assert OpenAIFallbackService.is_supported_fallback_channel("custom") is True
     # custom-<preset> 仅对回退渠道（第 2 / 第 3）允许
     assert (
@@ -105,7 +105,7 @@ def test_build_channel_order_accepts_custom_preset_secondary_and_tertiary():
     primary_preset_order = OpenAIFallbackService.build_channel_order(
         "custom-vercel-kimi",
         "deepseek-v4-flash",
-        "kimi-k2.5",
+        "kimi-k2.6",
     )
     assert primary_preset_order == []
 
@@ -113,9 +113,9 @@ def test_build_channel_order_accepts_custom_preset_secondary_and_tertiary():
     mixed_order = OpenAIFallbackService.build_channel_order(
         "custom",
         "custom-vercel-kimi",
-        "kimi-k2.5",
+        "kimi-k2.6",
     )
-    assert mixed_order == ["custom", "custom-vercel-kimi", "kimi-k2.5"]
+    assert mixed_order == ["custom", "custom-vercel-kimi", "kimi-k2.6"]
 
     # custom 与 custom-<preset> 视为不同渠道；但第三渠道重复 custom 时
     # 仅剩 2 个不同渠道，不满足完整三渠道链要求
@@ -130,7 +130,7 @@ def test_build_channel_order_accepts_custom_preset_secondary_and_tertiary():
     invalid_order = OpenAIFallbackService.build_channel_order(
         "custom",
         "custom-",
-        "kimi-k2.5",
+        "kimi-k2.6",
     )
     assert invalid_order == []
 
@@ -181,22 +181,22 @@ async def test_mark_channel_failed_skips_it_for_rest_of_day(monkeypatch: pytest.
     )
 
     fake_db.values[OPENAI_FALLBACK_SECONDARY_MODEL_KEY] = "deepseek-v4-flash"
-    fake_db.values[OPENAI_FALLBACK_TERTIARY_MODEL_KEY] = "kimi-k2.5"
+    fake_db.values[OPENAI_FALLBACK_TERTIARY_MODEL_KEY] = "kimi-k2.6"
 
     state = await service.get_daily_state("custom")
-    assert state.order == ["custom", "deepseek-v4-flash", "kimi-k2.5"]
-    assert state.active_order == ["custom", "deepseek-v4-flash", "kimi-k2.5"]
+    assert state.order == ["custom", "deepseek-v4-flash", "kimi-k2.6"]
+    assert state.active_order == ["custom", "deepseek-v4-flash", "kimi-k2.6"]
 
     updated_state = await service.mark_channel_failed(
         primary_model="custom",
         channel_name="custom",
     )
     assert updated_state.failed_channels == ["custom"]
-    assert updated_state.active_order == ["deepseek-v4-flash", "kimi-k2.5"]
+    assert updated_state.active_order == ["deepseek-v4-flash", "kimi-k2.6"]
 
     reloaded_state = await service.get_daily_state("custom")
     assert reloaded_state.failed_channels == ["custom"]
-    assert reloaded_state.active_order == ["deepseek-v4-flash", "kimi-k2.5"]
+    assert reloaded_state.active_order == ["deepseek-v4-flash", "kimi-k2.6"]
 
 
 @pytest.mark.asyncio
@@ -206,7 +206,7 @@ async def test_daily_state_resets_when_date_changes(monkeypatch: pytest.MonkeyPa
     service.db_manager = fake_db
 
     fake_db.values[OPENAI_FALLBACK_SECONDARY_MODEL_KEY] = "deepseek-v4-flash"
-    fake_db.values[OPENAI_FALLBACK_TERTIARY_MODEL_KEY] = "kimi-k2.5"
+    fake_db.values[OPENAI_FALLBACK_TERTIARY_MODEL_KEY] = "kimi-k2.6"
 
     monkeypatch.setattr(
         OpenAIFallbackService,
@@ -227,7 +227,7 @@ async def test_daily_state_resets_when_date_changes(monkeypatch: pytest.MonkeyPa
 
     assert reset_state.date == "2026-05-19"
     assert reset_state.failed_channels == []
-    assert reset_state.active_order == ["custom", "deepseek-v4-flash", "kimi-k2.5"]
+    assert reset_state.active_order == ["custom", "deepseek-v4-flash", "kimi-k2.6"]
 
 
 @pytest.mark.asyncio
@@ -236,7 +236,7 @@ async def test_failure_state_is_in_memory_only_and_resets_after_restart(
 ):
     fake_db = _FakeDBManager()
     fake_db.values[OPENAI_FALLBACK_SECONDARY_MODEL_KEY] = "deepseek-v4-flash"
-    fake_db.values[OPENAI_FALLBACK_TERTIARY_MODEL_KEY] = "kimi-k2.5"
+    fake_db.values[OPENAI_FALLBACK_TERTIARY_MODEL_KEY] = "kimi-k2.6"
 
     monkeypatch.setattr(
         OpenAIFallbackService,
@@ -259,7 +259,7 @@ async def test_failure_state_is_in_memory_only_and_resets_after_restart(
     restarted_state = await restarted_service.get_daily_state("custom")
 
     assert restarted_state.failed_channels == []
-    assert restarted_state.active_order == ["custom", "deepseek-v4-flash", "kimi-k2.5"]
+    assert restarted_state.active_order == ["custom", "deepseek-v4-flash", "kimi-k2.6"]
 
 
 @pytest.mark.asyncio
@@ -271,7 +271,7 @@ async def test_daily_state_restarts_from_first_channel_after_all_channels_failed
     service.db_manager = fake_db
 
     fake_db.values[OPENAI_FALLBACK_SECONDARY_MODEL_KEY] = "deepseek-v4-flash"
-    fake_db.values[OPENAI_FALLBACK_TERTIARY_MODEL_KEY] = "kimi-k2.5"
+    fake_db.values[OPENAI_FALLBACK_TERTIARY_MODEL_KEY] = "kimi-k2.6"
 
     monkeypatch.setattr(
         OpenAIFallbackService,
@@ -284,7 +284,7 @@ async def test_daily_state_restarts_from_first_channel_after_all_channels_failed
         primary_model="custom",
         channel_name="deepseek-v4-flash",
     )
-    await service.mark_channel_failed(primary_model="custom", channel_name="kimi-k2.5")
+    await service.mark_channel_failed(primary_model="custom", channel_name="kimi-k2.6")
 
     restarted_cycle_state = await service.get_daily_state("custom")
 
@@ -292,7 +292,7 @@ async def test_daily_state_restarts_from_first_channel_after_all_channels_failed
     assert restarted_cycle_state.active_order == [
         "custom",
         "deepseek-v4-flash",
-        "kimi-k2.5",
+        "kimi-k2.6",
     ]
 
 

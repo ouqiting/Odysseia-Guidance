@@ -49,14 +49,14 @@ def test_set_summary_model_updates_env_and_persists(
     monkeypatch.setattr(chat_settings_service_module, "load_dotenv", load_dotenv_mock)
     monkeypatch.delenv("SUMMARY_MODEL", raising=False)
 
-    persisted = asyncio.run(service.set_summary_model("kimi-k2.5"))
+    persisted = asyncio.run(service.set_summary_model("kimi-k2.6"))
 
     assert persisted is True
-    assert os.environ["SUMMARY_MODEL"] == "kimi-k2.5"
+    assert os.environ["SUMMARY_MODEL"] == "kimi-k2.6"
     set_key_mock.assert_called_once_with(
         str(env_path),
         "SUMMARY_MODEL",
-        "kimi-k2.5",
+        "kimi-k2.6",
         quote_mode="always",
         encoding="utf-8",
     )
@@ -73,14 +73,14 @@ def test_ai_model_settings_modal_submits_main_and_summary_models():
             current_model="gemini-2.5-flash",
             current_summary_model="custom",
             current_secondary_model="deepseek-v4-flash",
-            current_tertiary_model="kimi-k2.5",
+            current_tertiary_model="kimi-k2.6",
             available_models=["gemini-2.5-flash", "custom"],
             on_submit_callback=callback,
         )
         interaction = AsyncMock()
 
         modal.model_input = SimpleNamespace(value="deepseek-v4-flash")
-        modal.summary_model_input = SimpleNamespace(value="kimi-k2.5")
+        modal.summary_model_input = SimpleNamespace(value="kimi-k2.6")
         modal.secondary_model_input = SimpleNamespace(value="custom")
         modal.tertiary_model_input = SimpleNamespace(value="")
 
@@ -90,7 +90,7 @@ def test_ai_model_settings_modal_submits_main_and_summary_models():
             interaction,
             {
                 "ai_model": "deepseek-v4-flash",
-                "summary_model": "kimi-k2.5",
+                "summary_model": "kimi-k2.6",
                 "secondary_model": "custom",
                 "tertiary_model": "",
             },

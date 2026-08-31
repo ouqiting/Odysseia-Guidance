@@ -13,7 +13,7 @@ OPENAI_FALLBACK_TERTIARY_MODEL_KEY = "openai_fallback_tertiary_model"
 SUPPORTED_OPENAI_FALLBACK_MODELS = (
     "deepseek-v4-flash",
     "deepseek-v4-pro",
-    "kimi-k2.5",
+    "kimi-k2.6",
     "custom",
 )
 CUSTOM_PRESET_CHANNEL_PREFIX = "custom-"

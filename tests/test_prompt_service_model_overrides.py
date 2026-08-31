@@ -60,7 +60,7 @@ def test_system_prompt_fragment_only_replaces_target_tag(
         "PROMPT_CONFIG",
         {
             "default": dict(MINIMAL_DEFAULT_CONFIG),
-            "kimi-k2.5": {
+            "kimi-k2.6": {
                 "SYSTEM_PROMPT": """
 <behavioral_guidelines>kimi-behavior</behavioral_guidelines>
 """
@@ -68,7 +68,7 @@ def test_system_prompt_fragment_only_replaces_target_tag(
         },
     )
 
-    result = prompt_service.get_prompt("SYSTEM_PROMPT", model_name="kimi-k2.5")
+    result = prompt_service.get_prompt("SYSTEM_PROMPT", model_name="kimi-k2.6")
 
     assert "default-core" in result
     assert "kimi-behavior" in result
@@ -101,7 +101,7 @@ def test_group_model_override_supports_comma_separated_keys_and_exact_override(
         "JAILBREAK_USER_PROMPT", model_name="custom"
     )
     fallback_prompt = prompt_service.get_prompt(
-        "JAILBREAK_USER_PROMPT", model_name="kimi-k2.5"
+        "JAILBREAK_USER_PROMPT", model_name="kimi-k2.6"
     )
 
     assert deepseek_prompt == "shared-jailbreak-user"
@@ -117,12 +117,12 @@ def test_system_prompt_applies_group_then_exact_then_faction_pack(
         "PROMPT_CONFIG",
         {
             "default": dict(MINIMAL_DEFAULT_CONFIG),
-            ("deepseek-v4-flash", "deepseek-v4-pro", "kimi-k2.5"): {
+            ("deepseek-v4-flash", "deepseek-v4-pro", "kimi-k2.6"): {
                 "SYSTEM_PROMPT": """
 <abilities>group-abilities</abilities>
 """
             },
-            "kimi-k2.5": {
+            "kimi-k2.6": {
                 "SYSTEM_PROMPT": """
 <behavioral_guidelines>kimi-behavior</behavioral_guidelines>
 """
@@ -137,7 +137,7 @@ def test_system_prompt_applies_group_then_exact_then_faction_pack(
 """,
     )
 
-    result = prompt_service.get_prompt("SYSTEM_PROMPT", model_name="kimi-k2.5")
+    result = prompt_service.get_prompt("SYSTEM_PROMPT", model_name="kimi-k2.6")
 
     assert "faction-core" in result
     assert "kimi-behavior" in result
@@ -398,7 +398,7 @@ async def test_build_chat_prompt_moves_channel_context_before_dynamic_knowledge_
         affection_status=None,
         guild_name="测试服务器",
         location_name="测试地点",
-        model_name="kimi-k2.5",
+        model_name="kimi-k2.6",
     )
 
     def find_turn_index(target: str) -> int:
@@ -439,7 +439,7 @@ async def test_build_chat_prompt_keeps_current_user_input_unchanged_without_thin
         affection_status=None,
         guild_name="测试服务器",
         location_name="测试地点",
-        model_name="kimi-k2.5",
+        model_name="kimi-k2.6",
     )
 
     assert result[-1] == {"role": "user", "parts": ["[测试用户]: 你好"]}
@@ -468,7 +468,7 @@ async def test_build_chat_prompt_appends_text_attachment_to_current_user_input(
         affection_status=None,
         guild_name="测试服务器",
         location_name="测试地点",
-        model_name="kimi-k2.5",
+        model_name="kimi-k2.6",
         text_attachments=[
             {
                 "filename": "note.md",
