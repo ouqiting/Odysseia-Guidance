@@ -19,9 +19,9 @@ class MoonshotVisionService:
     """Moonshot 视觉识别服务（OpenAI 兼容接口）。"""
 
     def __init__(self) -> None:
-        self.moonshot_url = os.getenv("MOONSHOT_URL")
-        self.moonshot_api_keys = self._split_api_keys(os.getenv("MOONSHOT_VISION_KEY"))
-        self.model_name = "moonshot-v1-8k-vision-preview"
+        self.moonshot_url = os.getenv("VISION_MODEL_URL")
+        self.moonshot_api_keys = self._split_api_keys(os.getenv("VISION_MODEL_KEY"))
+        self.model_name = os.getenv("VISION_MODEL_NAME")
 
     @staticmethod
     def _split_api_keys(raw_api_keys: Optional[str]) -> List[str]:
