@@ -4,36 +4,25 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
+from pydantic import BaseModel, Field
 
 from src.chat.features.tools.tool_metadata import tool_metadata
 
 log = logging.getLogger(__name__)
 
-SEARCH_API_BASE_URL = "https://ai-gateway.vercel.sh/v1"
-SEARCH_API_URL = f"{SEARCH_API_BASE_URL}/responses"
-SEARCH_MODEL_NAME = "openai/gpt-5.4-mini"
-SEARCH_TIMEOUT_SECONDS = 25.0
-SEARCH_INCLUDE_FIELDS = ["web_search_call.action.sources"]
+MOONSHOT_DEFAULT_BASE_URL = "https://api.moonshot.cn/v1"
+KIMI_SEARCH_PRO_TIMEOUT_SECONDS = 30.0
+KIMI_FETCH_TIMEOUT_SECONDS = 30.0
+KIMI_SEARCH_LIMIT = 5
+KIMI_FETCH_MAX_MARKDOWN_CHARS = 20000
 GROK_MODEL_NAME = "grok-chat-fast"
 GROK_MAX_RETRIES = 3
 GROK_TOTAL_TIMEOUT_SECONDS = 30.0
-SEARCH_TOOL_INSTRUCTIONS = """
-你是一个联网检索助手。
-
-要求：
-1. 必须先使用 web_search 工具，再回答用户问题。
-2. 回答语言使用简体中文。
-3. 输出必须整理清楚，按以下结构组织：
-   - 摘要
-   - 关键信息
-   - 参考来源
-4. 如果搜索结果存在时效性或来源冲突，要明确说明。
-5. 不要编造来源；只引用实际搜索到的网址。
-""".strip()
 GROK_SEARCH_INSTRUCTIONS = """
 你是一个联网检索助手。
 
@@ -55,6 +44,33 @@ def _build_chat_completions_url(base_url: str) -> str:
     return normalized
 
 
+def _resolve_moonshot_base_url() -> str:
+    configured = str(os.getenv("MOONSHOT_URL") or "").strip().rstrip("/")
+    return configured or MOONSHOT_DEFAULT_BASE_URL
+
+
+def _build_kimi_tools_url(endpoint: str) -> str:
+    base_url = _resolve_moonshot_base_url()
+    return f"{base_url}/tools/{endpoint.strip('/')}"
+
+
+def _split_moonshot_api_keys(raw_api_keys: Optional[str]) -> List[str]:
+    raw = str(raw_api_keys or "").strip()
+    if not raw:
+        return []
+
+    parts = re.split(r"[,\n\r，]+", raw)
+    result: List[str] = []
+    seen = set()
+    for part in parts:
+        key = part.strip().strip('"').strip("'").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        result.append(key)
+    return result
+
+
 def _dedupe_sources(sources: List[Tuple[str, str]]) -> List[Dict[str, str]]:
     seen = set()
     deduped: List[Dict[str, str]] = []
@@ -72,82 +88,6 @@ def _dedupe_sources(sources: List[Tuple[str, str]]) -> List[Dict[str, str]]:
             }
         )
     return deduped
-
-
-def _extract_text_from_output_item(item: Dict[str, Any]) -> str:
-    if item.get("type") != "message":
-        return ""
-
-    chunks: List[str] = []
-    for content_item in item.get("content", []) or []:
-        if not isinstance(content_item, dict):
-            continue
-        if content_item.get("type") == "output_text":
-            text = str(content_item.get("text") or "").strip()
-            if text:
-                chunks.append(text)
-
-    return "\n".join(chunks).strip()
-
-
-def _extract_sources_from_annotations(
-    annotations: List[Dict[str, Any]],
-) -> List[Tuple[str, str]]:
-    extracted: List[Tuple[str, str]] = []
-    for annotation in annotations or []:
-        if not isinstance(annotation, dict):
-            continue
-        if annotation.get("type") != "url_citation":
-            continue
-        url = str(annotation.get("url") or "").strip()
-        title = str(annotation.get("title") or url or "Untitled").strip()
-        if url:
-            extracted.append((title, url))
-    return extracted
-
-
-def _extract_sources_from_response(data: Dict[str, Any]) -> List[Dict[str, str]]:
-    sources: List[Tuple[str, str]] = []
-
-    for item in data.get("output", []) or []:
-        if not isinstance(item, dict):
-            continue
-
-        if item.get("type") == "web_search_call":
-            action = item.get("action")
-            if isinstance(action, dict):
-                for source in action.get("sources", []) or []:
-                    if not isinstance(source, dict):
-                        continue
-                    url = str(source.get("url") or "").strip()
-                    title = str(source.get("title") or url or "Untitled").strip()
-                    if url:
-                        sources.append((title, url))
-
-        for content_item in item.get("content", []) or []:
-            if not isinstance(content_item, dict):
-                continue
-            sources.extend(
-                _extract_sources_from_annotations(content_item.get("annotations", []) or [])
-            )
-
-    return _dedupe_sources(sources)
-
-
-def _extract_answer_text(data: Dict[str, Any]) -> str:
-    output_text = str(data.get("output_text") or "").strip()
-    if output_text:
-        return output_text
-
-    chunks: List[str] = []
-    for item in data.get("output", []) or []:
-        if not isinstance(item, dict):
-            continue
-        text = _extract_text_from_output_item(item)
-        if text:
-            chunks.append(text)
-
-    return "\n\n".join(chunks).strip()
 
 
 def _extract_chat_completion_text(data: Dict[str, Any]) -> str:
@@ -221,13 +161,6 @@ def _extract_chat_completion_text_from_sse_body(body: str) -> str:
     return "".join(chunks).strip()
 
 
-def _has_web_search_call(data: Dict[str, Any]) -> bool:
-    for item in data.get("output", []) or []:
-        if isinstance(item, dict) and item.get("type") == "web_search_call":
-            return True
-    return False
-
-
 def _is_grok_configured() -> bool:
     grok_url = str(os.getenv("GROK_URL") or "").strip()
     grok_api_key = str(os.getenv("GROK_API_KEY") or "").strip()
@@ -236,13 +169,13 @@ def _is_grok_configured() -> bool:
 
 def _format_combined_answer(
     *,
-    gpt_answer: str,
+    kimi_answer: str,
     grok_answer: str,
 ) -> str:
     sections: List[str] = []
 
-    if gpt_answer:
-        sections.append(f"【GPT 联网搜索结果】\n{gpt_answer}")
+    if kimi_answer:
+        sections.append(f"【Kimi 联网搜索结果】\n{kimi_answer}")
 
     if grok_answer:
         sections.append(f"【Grok 辅助结果】\n{grok_answer}")
@@ -250,95 +183,263 @@ def _format_combined_answer(
     return "\n\n".join(section for section in sections if section).strip()
 
 
-async def _search_with_gpt(clean_question: str) -> Dict[str, Any]:
-    api_key = str(os.getenv("SEARCH_API_KEY") or "").strip()
-    if not api_key:
-        log.warning("[WebSearchTool] SEARCH_API_KEY 未配置。")
+def _format_kimi_search_answer(results: List[Dict[str, Any]]) -> str:
+    blocks: List[str] = []
+
+    for item in results or []:
+        if not isinstance(item, dict):
+            continue
+
+        title = str(item.get("title") or "").strip()
+        url = str(item.get("url") or "").strip()
+        date = str(item.get("date") or "").strip()
+        site_name = str(item.get("site_name") or "").strip()
+        snippet = str(item.get("snippet") or "").strip()
+
+        lines: List[str] = []
+        if title:
+            lines.append(f"标题：{title}")
+        if url:
+            lines.append(f"链接：{url}")
+        if site_name:
+            lines.append(f"站点：{site_name}")
+        if date:
+            lines.append(f"日期：{date}")
+        if snippet:
+            lines.append(f"摘要：{snippet}")
+
+        chunk_texts: List[str] = []
+        for chunk in item.get("chunks") or []:
+            if not isinstance(chunk, dict):
+                continue
+            text = str(chunk.get("text") or "").strip()
+            if text:
+                chunk_texts.append(text)
+        if chunk_texts:
+            lines.append("正文片段：")
+            lines.extend(chunk_texts)
+
+        if lines:
+            blocks.append("\n".join(lines))
+
+    return "\n\n".join(blocks).strip()
+
+
+async def _search_with_kimi_pro(clean_question: str) -> Dict[str, Any]:
+    api_keys = _split_moonshot_api_keys(os.getenv("MOONSHOT_API_KEY"))
+    if not api_keys:
+        log.warning("[WebSearchTool][Kimi] MOONSHOT_API_KEY 未配置。")
         return {
-            "channel": "gpt",
+            "channel": "kimi",
+            "enabled": False,
             "search_executed": False,
-            "error": "未配置 SEARCH_API_KEY，无法执行联网搜索。",
+            "error": "未配置 MOONSHOT_API_KEY，无法执行联网搜索。",
         }
 
+    api_url = _build_kimi_tools_url("search_pro")
     payload: Dict[str, Any] = {
-        "model": SEARCH_MODEL_NAME,
-        "instructions": SEARCH_TOOL_INSTRUCTIONS,
-        "input": clean_question,
-        "tools": [
-            {
-                "type": "web_search",
-                "external_web_access": True,
-            }
-        ],
-        "tool_choice": "required",
-        "include": list(SEARCH_INCLUDE_FIELDS),
+        "text_query": clean_question,
+        "limit": KIMI_SEARCH_LIMIT,
+        "timeout_seconds": int(KIMI_SEARCH_PRO_TIMEOUT_SECONDS),
     }
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    last_error = ""
+    for index, api_key in enumerate(api_keys, start=1):
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=KIMI_SEARCH_PRO_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    api_url,
+                    headers=headers,
+                    json=payload,
+                )
 
-    try:
-        async with httpx.AsyncClient(timeout=SEARCH_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                SEARCH_API_URL,
-                headers=headers,
-                json=payload,
+            if response.status_code != 200:
+                last_error = (
+                    f"HTTP {response.status_code}: {(response.text or '')[:2000]}"
+                ).strip()
+                log.warning(
+                    "[WebSearchTool][Kimi] 第 %s 个 key 请求失败 | %s",
+                    index,
+                    last_error,
+                )
+                continue
+
+            try:
+                data = response.json()
+            except json.JSONDecodeError:
+                last_error = (response.text or "<empty>")[:2000]
+                log.warning(
+                    "[WebSearchTool][Kimi] 第 %s 个 key 返回非 JSON 响应 | %s",
+                    index,
+                    last_error,
+                )
+                continue
+
+            results = data.get("search_results") or []
+            answer_text = _format_kimi_search_answer(results)
+            sources = _dedupe_sources(
+                [
+                    (
+                        str(item.get("title") or "").strip(),
+                        str(item.get("url") or "").strip(),
+                    )
+                    for item in results
+                    if isinstance(item, dict)
+                ]
             )
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        body_preview = exc.response.text[:2000] if exc.response is not None else ""
-        log.error(
-            "[WebSearchTool][GPT] HTTP 请求失败 | status=%s | body=%s",
-            exc.response.status_code if exc.response is not None else "N/A",
-            body_preview,
-        )
-        return {
-            "channel": "gpt",
-            "search_executed": False,
-            "error": f"联网搜索请求失败：HTTP {exc.response.status_code if exc.response is not None else 'N/A'}。",
-            "detail": body_preview or str(exc),
-        }
-    except httpx.RequestError as exc:
-        log.error("[WebSearchTool][GPT] 网络请求异常: %s", exc, exc_info=True)
-        return {
-            "channel": "gpt",
-            "search_executed": False,
-            "error": f"联网搜索网络异常：{type(exc).__name__}。",
-            "detail": str(exc),
-        }
 
-    try:
-        data = response.json()
-    except json.JSONDecodeError:
-        body_preview = response.text[:2000] if response.text else "<empty>"
-        log.error("[WebSearchTool][GPT] 响应不是 JSON: %s", body_preview)
-        return {
-            "channel": "gpt",
-            "search_executed": False,
-            "error": "联网搜索返回了非 JSON 响应。",
-            "detail": body_preview,
-        }
+            result: Dict[str, Any] = {
+                "channel": "kimi",
+                "enabled": True,
+                "search_executed": True,
+                "model": "kimi-search-pro",
+                "answer": answer_text,
+                "sources": sources,
+                "results": results,
+            }
 
-    answer_text = _extract_answer_text(data)
-    sources = _extract_sources_from_response(data)
-    search_executed = _has_web_search_call(data)
+            if not results:
+                result["error"] = "联网搜索未返回结果。"
+            elif not answer_text:
+                result["error"] = "联网搜索已执行，但未解析出可用片段。"
 
-    result: Dict[str, Any] = {
-        "channel": "gpt",
-        "search_executed": search_executed,
-        "model": SEARCH_MODEL_NAME,
-        "answer": answer_text,
-        "sources": sources,
+            return result
+        except httpx.RequestError as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            log.warning(
+                "[WebSearchTool][Kimi] 第 %s 个 key 网络异常 | %s",
+                index,
+                last_error,
+            )
+            continue
+        except Exception as exc:
+            last_error = str(exc)
+            log.error(
+                "[WebSearchTool][Kimi] 第 %s 个 key 发生异常 | %s",
+                index,
+                last_error,
+                exc_info=True,
+            )
+            continue
+
+    return {
+        "channel": "kimi",
+        "enabled": True,
+        "search_executed": False,
+        "model": "kimi-search-pro",
+        "error": "Kimi 联网搜索请求失败，已自动放弃。",
+        "detail": last_error,
     }
 
-    if not search_executed:
-        result["error"] = "模型本次响应中未实际触发 web_search 工具。"
-    elif not answer_text:
-        result["error"] = "联网搜索已执行，但未解析出整理后的正文。"
 
-    return result
+async def _fetch_with_kimi(target_url: str) -> Dict[str, Any]:
+    api_keys = _split_moonshot_api_keys(os.getenv("MOONSHOT_API_KEY"))
+    if not api_keys:
+        log.warning("[WebSearchTool][Kimi][Fetch] MOONSHOT_API_KEY 未配置。")
+        return {
+            "channel": "kimi_fetch",
+            "enabled": False,
+            "fetch_executed": False,
+            "error": "未配置 MOONSHOT_API_KEY，无法抓取网页。",
+        }
+
+    api_url = _build_kimi_tools_url("fetch")
+    payload: Dict[str, Any] = {"url": target_url}
+
+    last_error = ""
+    for index, api_key in enumerate(api_keys, start=1):
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=KIMI_FETCH_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    api_url,
+                    headers=headers,
+                    json=payload,
+                )
+
+            if response.status_code != 200:
+                last_error = (
+                    f"HTTP {response.status_code}: {(response.text or '')[:2000]}"
+                ).strip()
+                log.warning(
+                    "[WebSearchTool][Kimi][Fetch] 第 %s 个 key 请求失败 | %s",
+                    index,
+                    last_error,
+                )
+                continue
+
+            try:
+                data = response.json()
+            except json.JSONDecodeError:
+                last_error = (response.text or "<empty>")[:2000]
+                log.warning(
+                    "[WebSearchTool][Kimi][Fetch] 第 %s 个 key 返回非 JSON 响应 | %s",
+                    index,
+                    last_error,
+                )
+                continue
+
+            title = str(data.get("title") or "").strip()
+            markdown = str(data.get("markdown") or "").strip()
+            final_url = str(data.get("url") or target_url).strip() or target_url
+
+            if len(markdown) > KIMI_FETCH_MAX_MARKDOWN_CHARS:
+                markdown = (
+                    markdown[:KIMI_FETCH_MAX_MARKDOWN_CHARS]
+                    + "\n\n...(正文过长，已截断)"
+                )
+
+            result: Dict[str, Any] = {
+                "channel": "kimi_fetch",
+                "enabled": True,
+                "fetch_executed": True,
+                "title": title,
+                "url": final_url,
+                "answer": markdown,
+                "sources": [
+                    {
+                        "title": title or final_url,
+                        "url": final_url,
+                    }
+                ],
+            }
+
+            if not markdown:
+                result["error"] = "网页抓取已执行，但未获取到正文内容。"
+
+            return result
+        except httpx.RequestError as exc:
+            last_error = f"{type(exc).__name__}: {exc}"
+            log.warning(
+                "[WebSearchTool][Kimi][Fetch] 第 %s 个 key 网络异常 | %s",
+                index,
+                last_error,
+            )
+            continue
+        except Exception as exc:
+            last_error = str(exc)
+            log.error(
+                "[WebSearchTool][Kimi][Fetch] 第 %s 个 key 发生异常 | %s",
+                index,
+                last_error,
+                exc_info=True,
+            )
+            continue
+
+    return {
+        "channel": "kimi_fetch",
+        "enabled": True,
+        "fetch_executed": False,
+        "error": "Kimi 网页抓取请求失败，已自动放弃。",
+        "detail": last_error,
+    }
 
 
 async def _search_with_grok(clean_question: str) -> Dict[str, Any]:
@@ -388,7 +489,7 @@ async def _search_with_grok(clean_question: str) -> Dict[str, Any]:
             }
 
         try:
-            timeout_seconds = min(SEARCH_TIMEOUT_SECONDS, remaining_seconds)
+            timeout_seconds = min(KIMI_SEARCH_PRO_TIMEOUT_SECONDS, remaining_seconds)
             async with httpx.AsyncClient(timeout=timeout_seconds) as client:
                 response = await client.post(
                     grok_url,
@@ -486,53 +587,134 @@ async def _search_with_grok(clean_question: str) -> Dict[str, Any]:
             }
 
 
+class WebSearchParams(BaseModel):
+    question: str = Field(
+        "",
+        description="需要联网搜索的问题，例如“上网搜一下A项目是做什么的”里真正要搜索的那部分问题。抓取模式下可为空。",
+    )
+    mode: str = Field(
+        "search",
+        description="检索模式，`search`（联网搜索）或 `fetch`（网页抓取），默认 `search`。",
+    )
+    url: str = Field(
+        "",
+        description="网页抓取模式下的目标网页 URL，仅支持 http/https。搜索模式下留空。",
+    )
+
+
 @tool_metadata(
     name="联网搜索",
-    description="当用户明确要求上网搜、联网搜、搜索最新网页信息时，使用此工具联网检索并整理结果。",
+    description=(
+        "联网检索网页信息。支持两种模式：mode=search 联网搜索，"
+        "mode=fetch 网页抓取（只抓取指定 URL 的正文）。"
+    ),
     emoji="🌐",
     category="工具",
 )
-async def search_web(question: str, **kwargs) -> Dict[str, Any]:
+async def search_web(params: WebSearchParams, **kwargs) -> Dict[str, Any]:
     """
     [工具说明]
-    这是一个专门用于联网搜索网页信息的工具。
+    这是一个用于联网检索网页信息的工具，支持两种模式。
+
+    [模式选择 - 必须显式传入 mode]
+    - `mode="search"`：联网搜索。适用于用户想“上网搜”、“联网搜”、“网上查”、“帮我搜最新信息”等。
+    - `mode="fetch"`：网页抓取。适用于用户给出一个明确的网址/链接，或要求“看一下这个网页/链接的内容”。
+      只抓取该 URL 的正文
 
     [调用规则 - 高优先级]
-    - 当用户明确提到“上网搜”、“联网搜”、“网上查”、“去网上搜一下”、“帮我搜最新信息”、“看一下网页/链接内容”时，你必须调用此工具。
+    - 当用户明确提到“上网搜”、“联网搜”、“网上查”、“去网上搜一下”、“帮我搜最新信息”时，必须调用此工具，并传 `mode="search"`。
+    - 当用户给出明确的 URL（http/https）或要求读取某个链接内容时，必须调用此工具，并传 `mode="fetch"`，同时把链接放进 `url`。
     - 当问题明显依赖最新网页信息时，应优先考虑此工具，而不是直接凭记忆回答。
     - 如果没有调用此工具，就不要假装自己已经上网搜索过。
-    - 传入参数时，只需要把“要搜索的问题”本身传给 `question`，不要夹带多余解释。
+    - `mode="search"` 时只需把“要搜索的问题”传给 `question`，不要夹带多余解释；`mode="fetch"` 时把目标链接传给 `url`。
 
     [结果使用规则]
-    - 工具返回的 `answer` 是已经整理好的搜索结果，可以直接基于它进行回复。
-    - 工具返回的 `sources` 是实际搜索到的网址列表；如果需要引用来源，应优先使用这些链接。
-    - 如果工具返回 `search_executed=false` 或 `error`，要如实告诉用户本次联网搜索失败，不要编造结果。
+    - 工具返回的 `answer` 是检索到的内容（搜索模式为搜索片段，抓取模式为网页正文），可直接基于它进行回复。
+    - 工具返回的 `sources` 是实际检索到的网址列表；如果需要引用来源，应优先使用这些链接。
+    - 如果工具返回 `search_executed=false` / `fetch_executed=false` 或 `error`，要如实告诉用户本次联网检索失败，不要编造结果。
 
     Args:
-        question (str): 需要联网搜索的问题，例如“上网搜一下 ds2api 项目是做什么的”里真正要搜索的那部分问题。
+        params (WebSearchParams): 检索参数。
+            - question: 需要联网搜索的问题，例如“上网搜一下A项目是做什么的”里真正要搜索的那部分问题。抓取模式下可为空。
+            - mode: 检索模式，`"search"`（联网搜索）或 `"fetch"`（网页抓取），默认 `"search"`。
+            - url: 网页抓取模式下的目标网页 URL，仅支持 http/https。搜索模式下留空。
 
     Returns:
-        一个包含搜索是否执行、整理后的答案、来源列表和错误信息的字典。
+        一个包含检索是否执行、整理后的答案、来源列表和错误信息的字典。
     """
     del kwargs
 
-    clean_question = str(question or "").strip()
+    if not isinstance(params, WebSearchParams):
+        try:
+            clean_dict = {
+                str(key).strip().strip('"'): value
+                for key, value in (params or {}).items()
+            }
+            params = WebSearchParams(**clean_dict)
+        except Exception as e:
+            log.error("创建 WebSearchParams 失败: %s", e)
+            return {
+                "search_executed": False,
+                "fetch_executed": False,
+                "error": f"参数格式不正确: {e}",
+            }
+
+    normalized_mode = str(params.mode or "search").strip().lower()
+    if normalized_mode not in {"search", "fetch"}:
+        normalized_mode = "search"
+
+    clean_question = str(params.question or "").strip()
+    clean_url = str(params.url or "").strip()
+
+    if normalized_mode == "fetch":
+        if not clean_url:
+            return {
+                "search_executed": False,
+                "fetch_executed": False,
+                "mode": "fetch",
+                "error": "网页抓取模式需要提供 url。",
+            }
+
+        fetch_result = await _fetch_with_kimi(clean_url)
+        fetch_answer = str(fetch_result.get("answer") or "").strip()
+
+        result: Dict[str, Any] = {
+            "search_executed": False,
+            "fetch_executed": bool(fetch_result.get("fetch_executed")),
+            "mode": "fetch",
+            "query": clean_question or clean_url,
+            "url": clean_url,
+            "answer": fetch_answer,
+            "sources": fetch_result.get("sources", []) or [],
+            "channels": {
+                "kimi_fetch": fetch_result,
+            },
+        }
+
+        if fetch_result.get("error") and not fetch_answer:
+            result["error"] = str(fetch_result.get("error"))
+            if fetch_result.get("detail"):
+                result["detail"] = fetch_result.get("detail")
+
+        return result
+
     if not clean_question:
         return {
             "search_executed": False,
+            "mode": "search",
             "error": "搜索问题不能为空。",
         }
 
-    gpt_task = _search_with_gpt(clean_question)
+    kimi_task = _search_with_kimi_pro(clean_question)
     grok_enabled = _is_grok_configured()
 
     if grok_enabled:
-        gpt_result, grok_result = await asyncio.gather(
-            gpt_task,
+        kimi_result, grok_result = await asyncio.gather(
+            kimi_task,
             _search_with_grok(clean_question),
         )
     else:
-        gpt_result = await gpt_task
+        kimi_result = await kimi_task
         grok_result = {
             "channel": "grok",
             "enabled": False,
@@ -540,15 +722,15 @@ async def search_web(question: str, **kwargs) -> Dict[str, Any]:
             "model": GROK_MODEL_NAME,
         }
 
-    gpt_answer = str(gpt_result.get("answer") or "").strip()
+    kimi_answer = str(kimi_result.get("answer") or "").strip()
     grok_answer = str(grok_result.get("answer") or "").strip()
     combined_answer = _format_combined_answer(
-        gpt_answer=gpt_answer,
+        kimi_answer=kimi_answer,
         grok_answer=grok_answer,
     )
 
     merged_sources_input: List[Tuple[str, str]] = []
-    for channel_result in [gpt_result, grok_result]:
+    for channel_result in [kimi_result, grok_result]:
         for source in channel_result.get("sources", []) or []:
             if not isinstance(source, dict):
                 continue
@@ -563,18 +745,19 @@ async def search_web(question: str, **kwargs) -> Dict[str, Any]:
     if grok_enabled and grok_result.get("error"):
         warnings.append("Grok 通道失败，已自动忽略。")
 
-    result: Dict[str, Any] = {
-        "search_executed": bool(gpt_result.get("search_executed")),
+    result = {
+        "search_executed": bool(kimi_result.get("search_executed")),
+        "mode": "search",
         "query": clean_question,
-        "model": SEARCH_MODEL_NAME,
+        "model": "kimi-search-pro",
         "models": [
-            SEARCH_MODEL_NAME,
+            "kimi-search-pro",
             *([GROK_MODEL_NAME] if grok_enabled else []),
         ],
-        "answer": combined_answer or gpt_answer or grok_answer,
+        "answer": combined_answer or kimi_answer or grok_answer,
         "sources": _dedupe_sources(merged_sources_input),
         "channels": {
-            "gpt": gpt_result,
+            "kimi": kimi_result,
             "grok": grok_result,
         },
     }
@@ -582,15 +765,15 @@ async def search_web(question: str, **kwargs) -> Dict[str, Any]:
     if warnings:
         result["warnings"] = warnings
 
-    if gpt_result.get("error") and not grok_answer:
-        result["error"] = str(gpt_result.get("error"))
-        if gpt_result.get("detail"):
-            result["detail"] = gpt_result.get("detail")
+    if kimi_result.get("error") and not grok_answer:
+        result["error"] = str(kimi_result.get("error"))
+        if kimi_result.get("detail"):
+            result["detail"] = kimi_result.get("detail")
     elif not combined_answer:
         result["error"] = "联网搜索未返回可用内容。"
-    elif not gpt_result.get("search_executed"):
+    elif not kimi_result.get("search_executed"):
         result["error"] = str(
-            gpt_result.get("error") or "GPT 通道本次未实际触发 web_search 工具。"
+            kimi_result.get("error") or "Kimi 通道本次未实际执行联网搜索。"
         )
 
     return result

@@ -261,7 +261,6 @@ class OpenAIService:
         is_custom_model: bool,
         is_kimi_model: bool,
         openai_tools: Optional[List[Dict[str, Any]]] = None,
-        kimi_builtin_tools: Optional[List[Dict[str, Any]]] = None,
         proactive_tool_choice: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
@@ -275,13 +274,8 @@ class OpenAIService:
         }
 
         if is_kimi_model:
-            request_tools: List[Dict[str, Any]] = []
             if openai_tools:
-                request_tools.extend(openai_tools)
-            if kimi_builtin_tools:
-                request_tools.extend(kimi_builtin_tools)
-            if request_tools:
-                payload["tools"] = request_tools
+                payload["tools"] = openai_tools
         elif openai_tools:
             payload["tools"] = openai_tools
             if proactive_tool_choice:
@@ -843,13 +837,6 @@ class OpenAIService:
                     failure_kind="validation_error",
                     should_lock_channel=True,
                 )
-
-        should_enable_kimi_web_search = False
-        if is_kimi_model:
-            should_enable_kimi_web_search = self.kimi_model_client.resolve_web_search_enabled(
-                message=message,
-                replied_message=replied_message,
-            )
 
         images = self._compress_images_for_vps_mode(images)
 
@@ -1499,7 +1486,7 @@ class OpenAIService:
             if is_deepseek_model or is_custom_model:
                 request_tools_for_log = openai_tools
             elif is_kimi_model:
-                request_tools_for_log = openai_tools + kimi_builtin_tools
+                request_tools_for_log = openai_tools
             else:
                 request_tools_for_log = []
             '''
@@ -1572,18 +1559,6 @@ class OpenAIService:
                 else:
                     request_model_name = self.kimi_model_client.get_request_model_name()
 
-                # Kimi 联网搜索工具：仅在使用官方站时注入
-                kimi_builtin_tools: List[Dict[str, Any]] = []
-                if is_kimi_model and should_enable_kimi_web_search:
-                    using_custom_site = self.kimi_model_client.will_use_custom_site and not skip_custom_site_for_this_turn
-                    if not using_custom_site:
-                        kimi_builtin_tools = [
-                            {
-                                "type": "builtin_function",
-                                "function": {"name": "$web_search"},
-                            }
-                        ]
-
                 proactive_tool_choice = resolve_proactive_tool_choice(
                     message,
                     extract_function_tool_names(openai_tools),
@@ -1620,7 +1595,6 @@ class OpenAIService:
                     is_custom_model=is_custom_model,
                     is_kimi_model=is_kimi_model,
                     openai_tools=openai_tools,
-                    kimi_builtin_tools=kimi_builtin_tools,
                     proactive_tool_choice=proactive_tool_choice,
                 )
 
@@ -2025,21 +1999,6 @@ class OpenAIService:
                         args = {}
 
                     log.info(f"  - 准备执行工具: {tool_name}, 参数: {args}")
-
-                    if tool_name == "$web_search":
-                        search_tokens = args.get("usage", {}).get("total_tokens")
-                        if search_tokens is not None:
-                            log.info("[Kimi] $web_search 内容 token 数: %s", search_tokens)
-
-                        openai_messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": call["id"],
-                                "name": tool_name,
-                                "content": json.dumps(args, ensure_ascii=False),
-                            }
-                        )
-                        continue
 
                     if tool_name == "analyze_image_with_gemini_pro":
                         if deep_vision_used:

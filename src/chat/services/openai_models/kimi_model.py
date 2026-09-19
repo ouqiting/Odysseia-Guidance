@@ -4,7 +4,6 @@ import base64
 import io
 import logging
 import os
-import re
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from zoneinfo import ZoneInfo
@@ -128,50 +127,6 @@ class KimiModelClient:
     @staticmethod
     def _build_request_error_log_fields(e: httpx.RequestError) -> Dict[str, str]:
         return build_request_error_log_fields(e)
-
-    @staticmethod
-    def should_enable_web_search(
-        message: Optional[str], replied_message: Optional[str] = None
-    ) -> bool:
-        text_parts = []
-        if isinstance(message, str) and message.strip():
-            text_parts.append(message.strip())
-        if isinstance(replied_message, str) and replied_message.strip():
-            text_parts.append(replied_message.strip())
-
-        if not text_parts:
-            return False
-
-        combined_text = " ".join(text_parts)
-        lowered_text = combined_text.lower()
-
-        if re.search(r"https?://|www\.", lowered_text):
-            return True
-
-        explicit_network_keywords = (
-            "联网搜索",
-            "联网查",
-            "在线搜索",
-            "打开链接",
-            "访问链接",
-            "查看链接",
-            "网页链接",
-            "网址",
-        )
-        return any(keyword in combined_text for keyword in explicit_network_keywords)
-
-    def resolve_web_search_enabled(
-        self, message: Optional[str], replied_message: Optional[str] = None
-    ) -> bool:
-        enabled = self.should_enable_web_search(
-            message=message,
-            replied_message=replied_message,
-        )
-        log.info(
-            "[Kimi] 联网搜索开关=%s（仅在“上网”/URL/明确联网关键词时启用）",
-            "ON" if enabled else "OFF",
-        )
-        return enabled
 
     @staticmethod
     def trim_messages_for_retry(
