@@ -14,14 +14,14 @@ log = logging.getLogger(__name__)
 class PersonalMemorySearchService:
     """
     从 community.personal_memory_chunks 中召回个人记忆条目：
-    - 先根据 query 取最相关 Top10
-    - 再随机补 5 条（排除 Top10，避免重复）
-    返回总计最多 15 条，用于 Prompt 注入。
+    - 先根据 query 取最相关 Top5
+    - 再随机补 2 条（排除 Top5，避免重复）
+    返回总计最多 7 条，用于 Prompt 注入。
     """
 
     def __init__(self):
-        self.top_k_relevant = 10
-        self.top_k_random = 5
+        self.top_k_relevant = 5
+        self.top_k_random = 2
 
     @staticmethod
     def _vector_to_pg_str(vec: List[float]) -> str:
