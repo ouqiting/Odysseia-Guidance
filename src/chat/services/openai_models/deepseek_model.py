@@ -6,14 +6,19 @@ import io
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import httpx
 from PIL import Image
+from google.genai import types
 
+from src.chat.config import chat_config as app_config
 from src.chat.services.moonshot_vision_service import moonshot_vision_service
 
 log = logging.getLogger(__name__)
+
+# deepseek-flash 已原生支持多模态图片输入；其余 DeepSeek 模型仍需 Moonshot 转述为文本
+NATIVE_VISION_MODEL_NAMES = frozenset({"deepseek-flash"})
 
 
 class DeepSeekModelClient:
@@ -162,6 +167,165 @@ class DeepSeekModelClient:
         if first_effective_part_is_image:
             combined = "\n" + combined
         return combined
+
+    @staticmethod
+    def supports_native_image_input(model_name: Optional[str]) -> bool:
+        """deepseek-flash 走原生多模态图片输入，其余模型继续 OCR 转述。"""
+        return str(model_name or "").strip() in NATIVE_VISION_MODEL_NAMES
+
+    @staticmethod
+    def extract_text_from_openai_content(
+        content: Union[str, List[Dict[str, Any]]]
+    ) -> str:
+        """从多模态 content block 中提取纯文本（system / assistant 轮次只保留文本）。"""
+        if isinstance(content, str):
+            return content.strip()
+
+        text_chunks: List[str] = []
+        for block in content or []:
+            if (
+                isinstance(block, dict)
+                and block.get("type") == "text"
+                and isinstance(block.get("text"), str)
+            ):
+                text_value = block["text"].strip()
+                if text_value:
+                    text_chunks.append(text_value)
+
+        return "\n".join(text_chunks).strip()
+
+    @staticmethod
+    def _build_image_content_block(
+        image_bytes: bytes, mime_type: str
+    ) -> Dict[str, Any]:
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime_type};base64,{image_b64}"},
+        }
+
+    @staticmethod
+    def _extract_image_bytes_from_part(part: Dict[str, Any]) -> Optional[bytes]:
+        direct_bytes = part.get("data") or part.get("bytes")
+        if isinstance(direct_bytes, (bytes, bytearray)) and direct_bytes:
+            return bytes(direct_bytes)
+
+        image_base64 = part.get("image_base64")
+        if isinstance(image_base64, str) and image_base64.strip():
+            try:
+                return base64.b64decode(image_base64.strip(), validate=True)
+            except Exception:
+                return None
+
+        data_preview = part.get("data_preview")
+        if isinstance(data_preview, str) and data_preview.strip():
+            normalized_preview = data_preview.strip()
+            try:
+                return bytes.fromhex(normalized_preview)
+            except ValueError:
+                try:
+                    return base64.b64decode(normalized_preview, validate=True)
+                except Exception:
+                    return None
+
+        return None
+
+    @staticmethod
+    def _gif_size_limit_bytes(source: str) -> int:
+        image_cfg = app_config.IMAGE_PROCESSING_CONFIG
+        if source == "emoji":
+            max_mb = float(image_cfg.get("MAX_ANIMATED_EMOJI_SIZE_MB", 2))
+        else:
+            max_mb = float(image_cfg.get("MAX_GIF_SIZE_MB", 8))
+        return int(max_mb * 1024 * 1024)
+
+    def _is_oversized_gif(
+        self, image_bytes: bytes, mime_type: str, source: str
+    ) -> bool:
+        if str(mime_type).strip().lower() != "image/gif":
+            return False
+        return len(image_bytes) > self._gif_size_limit_bytes(source)
+
+    def build_native_image_turn_content(
+        self, parts: List[Any]
+    ) -> List[Dict[str, Any]]:
+        """
+        构建 DeepSeek 原生多模态单条消息 content。
+
+        与 Kimi 通道一致：图片以 data URI 直传，不再走 Moonshot 转述。
+        """
+        content_blocks: List[Dict[str, Any]] = []
+
+        for part in parts or []:
+            if hasattr(part, "thought") and getattr(part, "thought", False):
+                continue
+
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                text_value = part["text"].strip()
+                if text_value:
+                    content_blocks.append({"type": "text", "text": text_value})
+                continue
+
+            if isinstance(part, types.Part):
+                if part.text:
+                    text_value = part.text.strip()
+                    if text_value:
+                        content_blocks.append({"type": "text", "text": text_value})
+                    continue
+
+                if part.inline_data and part.inline_data.data:
+                    mime_type = part.inline_data.mime_type or "image/png"
+                    image_bytes = bytes(part.inline_data.data)
+                    if self._is_oversized_gif(image_bytes, mime_type, "generic"):
+                        content_blocks.append(
+                            {
+                                "type": "text",
+                                "text": "（收到一张 GIF，但体积超过限制，已跳过）",
+                            }
+                        )
+                        continue
+                    content_blocks.append(
+                        self._build_image_content_block(image_bytes, mime_type)
+                    )
+                    continue
+
+            if isinstance(part, Image.Image):
+                buffered = io.BytesIO()
+                part.save(buffered, format="PNG")
+                content_blocks.append(
+                    self._build_image_content_block(buffered.getvalue(), "image/png")
+                )
+                continue
+
+            if isinstance(part, dict) and part.get("type") == "image":
+                mime_type = (
+                    str(part.get("mime_type", "image/png")).strip() or "image/png"
+                )
+                image_bytes = self._extract_image_bytes_from_part(part)
+                if not image_bytes:
+                    content_blocks.append(
+                        {"type": "text", "text": "（收到一张图片，但解析失败）"}
+                    )
+                    continue
+
+                if self._is_oversized_gif(
+                    image_bytes, mime_type, str(part.get("source", "generic"))
+                ):
+                    content_blocks.append(
+                        {"type": "text", "text": "（收到一张 GIF，但体积超过限制，已跳过）"}
+                    )
+                    continue
+
+                content_blocks.append(
+                    self._build_image_content_block(image_bytes, mime_type)
+                )
+                continue
+
+            fallback_text = str(part).strip()
+            if fallback_text:
+                content_blocks.append({"type": "text", "text": fallback_text})
+
+        return content_blocks
 
     async def post_process_tool_response(self, raw_response: Any) -> Any:
         """

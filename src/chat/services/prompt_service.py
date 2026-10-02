@@ -22,6 +22,9 @@ log = logging.getLogger(__name__)
 
 EMOJI_PLACEHOLDER_REGEX = re.compile(r"__EMOJI_(\w+)__")
 
+# 原生多模态通道：模型原生支持 GIF，直接发送原始文件而不截取首帧
+RAW_GIF_MODEL_NAMES = frozenset({"kimi-k2.6", "deepseek-flash"})
+
 
 class PromptService:
     """
@@ -41,8 +44,8 @@ class PromptService:
         将模型配置键规范化为模型名列表。
         支持：
         - "kimi-k2.6"
-        - "deepseek-v4-flash, deepseek-v4-pro, custom"
-        - ("deepseek-v4-flash", "deepseek-v4-pro", "custom")
+        - "deepseek-flash, deepseek-v4-pro, custom"
+        - ("deepseek-flash", "deepseek-v4-pro", "custom")
         """
         if isinstance(model_key, str):
             if "," in model_key:
@@ -436,9 +439,10 @@ class PromptService:
         return f"{text[:prefix_core_end]} {normalized_body}"
 
     @staticmethod
-    def _should_keep_raw_gif_for_kimi(
+    def _should_keep_raw_gif(
         model_name: Optional[str], image_data: Optional[Dict[str, Any]]
     ) -> bool:
+        """原生多模态通道（Kimi / deepseek-flash）保留原始 GIF；custom 开启视频输入时同理。"""
         if not isinstance(image_data, dict):
             return False
 
@@ -447,7 +451,7 @@ class PromptService:
         if mime_type != "image/gif" or not isinstance(image_bytes, (bytes, bytearray)):
             return False
 
-        if model_name == "kimi-k2.6":
+        if model_name in RAW_GIF_MODEL_NAMES:
             return True
 
         if model_name == "custom":
@@ -1023,7 +1027,7 @@ class PromptService:
                 emoji_name = match.group(1)
                 if emoji_name in emoji_map:
                     emoji_data = emoji_map[emoji_name]
-                    if self._should_keep_raw_gif_for_kimi(model_name, emoji_data):
+                    if self._should_keep_raw_gif(model_name, emoji_data):
                         raw_image_part = self._build_raw_image_part(emoji_data)
                         if raw_image_part:
                             raw_image_part["name"] = emoji_name
@@ -1142,7 +1146,7 @@ class PromptService:
 
         # 追加所有附件图片到末尾
         for img_data in attachment_images:
-            if self._should_keep_raw_gif_for_kimi(model_name, img_data):
+            if self._should_keep_raw_gif(model_name, img_data):
                 raw_image_part = self._build_raw_image_part(img_data)
                 if raw_image_part:
                     current_user_parts.append(raw_image_part)

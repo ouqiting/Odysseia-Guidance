@@ -413,9 +413,9 @@ class OpenAIService:
         用于内部任务，例如个人记忆摘要、礼物感谢词等一次性 prompt。
         这里不构建完整聊天上下文，也不执行工具调用。
         """
-        effective_model_name = model_name or "deepseek-v4-flash"
+        effective_model_name = model_name or "deepseek-flash"
         is_deepseek_model = effective_model_name in {
-            "deepseek-v4-flash",
+            "deepseek-flash",
             "deepseek-v4-pro",
         }
         is_custom_model = self._is_custom_family_model(effective_model_name)
@@ -766,14 +766,21 @@ class OpenAIService:
         """
         OpenAI 兼容专用通道（DeepSeek / Kimi / Custom）。
         """
-        effective_model_name = model_name or "deepseek-v4-flash"
+        effective_model_name = model_name or "deepseek-flash"
         is_deepseek_model = effective_model_name in {
-            "deepseek-v4-flash",
+            "deepseek-flash",
             "deepseek-v4-pro",
         }
         is_custom_model = self._is_custom_family_model(effective_model_name)
         is_kimi_model = effective_model_name == "kimi-k2.6"
         is_direct_openai_model = is_deepseek_model or is_custom_model
+        # deepseek-flash 已支持多模态图片输入，直接直传原图；deepseek-v4-pro 仍走 Moonshot 转述
+        deepseek_native_vision = (
+            is_deepseek_model
+            and self.deepseek_model_client.supports_native_image_input(
+                effective_model_name
+            )
+        )
         custom_runtime_config: Optional[Dict[str, Any]] = None
         if is_custom_model:
             custom_runtime_config, config_error = self._resolve_custom_runtime_config(
@@ -1303,13 +1310,31 @@ class OpenAIService:
 
         openai_messages: List[Dict[str, Any]] = []
         is_first_user = True
+
+        # 图片处理分流：
+        # - OCR 转述：deepseek-v4-pro、Custom(开启识图) 先把图片转成文字
+        # - 原生直传：deepseek-flash、Kimi、Custom(未开启识图) 直接发送多模态 content block
+        ocr_content_turn = (is_deepseek_model and not deepseek_native_vision) or (
+            is_custom_model and custom_vision_enabled
+        )
+        if deepseek_native_vision:
+            build_multimodal_content = (
+                self.deepseek_model_client.build_native_image_turn_content
+            )
+            multimodal_content_text = (
+                self.deepseek_model_client.extract_text_from_openai_content
+            )
+        else:
+            build_multimodal_content = self.kimi_model_client.build_turn_content
+            multimodal_content_text = (
+                self.kimi_model_client.extract_text_from_openai_content
+            )
+
         for turn in final_conversation:
             gemini_role = turn.get("role")
 
-            # DeepSeek / Custom(开启识图)：沿用 OCR 拼接为纯文本
-            if is_deepseek_model or (
-                is_custom_model and custom_vision_enabled
-            ):
+            # deepseek-v4-pro / Custom(开启识图)：沿用 OCR 拼接为纯文本
+            if ocr_content_turn:
                 if is_deepseek_model:
                     content = await self.deepseek_model_client.build_turn_content(
                         turn.get("parts", []) or []
@@ -1333,24 +1358,18 @@ class OpenAIService:
                         openai_messages.append({"role": "user", "content": content})
                 continue
 
-            # Kimi / Custom：直接发送多模态 content block（图片直传，不走 Moonshot OCR）
-            content_blocks = self.kimi_model_client.build_turn_content(
-                turn.get("parts", []) or []
-            )
+            # deepseek-flash / Kimi / Custom：直接发送多模态 content block（图片直传，不走 Moonshot OCR）
+            content_blocks = build_multimodal_content(turn.get("parts", []) or [])
             if not content_blocks:
                 continue
 
             if gemini_role == "model":
-                assistant_text = self.kimi_model_client.extract_text_from_openai_content(
-                    content_blocks
-                )
+                assistant_text = multimodal_content_text(content_blocks)
                 if assistant_text:
                     openai_messages.append({"role": "assistant", "content": assistant_text})
             else:
                 if is_first_user:
-                    system_text = self.kimi_model_client.extract_text_from_openai_content(
-                        content_blocks
-                    )
+                    system_text = multimodal_content_text(content_blocks)
                     if system_text:
                         openai_messages.append({"role": "system", "content": system_text})
                     is_first_user = False
