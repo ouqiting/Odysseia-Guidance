@@ -355,6 +355,19 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml ps
 - **CUSTOM_GEMINI_URL**: 自定义 Gemini 端点（可选）
 - **CUSTOM_GEMINI_API_KEY**: 自定义 Gemini API 密钥（可选）
 
+#### 投喂文字评价链路（`/投喂`）
+- **FEEDING_TEXT_PROVIDER**: 文字评价使用的链路，`gemini`（默认）或 `openai`
+- **FEEDING_GEMINI_MODEL**: `gemini` 链路使用的模型名（渠道固定走 `CUSTOM_GEMINI_URL`，默认 `gemini-3-flash-preview`）
+- **FEEDING_OPENAI_URL**: `openai` 链路的接口地址（需带版本前缀，例如 `https://api.openai.com/v1`）
+- **FEEDING_OPENAI_API_KEY**: `openai` 链路的 API Key
+- **FEEDING_OPENAI_MODEL**: `openai` 链路的模型名（需支持视觉输入）
+- **FEEDING_OPENAI_STREAM**: `openai` 链路是否使用流式返回，默认 `false`
+- **FEEDING_OPENAI_TIMEOUT**: `openai` 链路请求超时秒数，默认 `120`
+- **FEEDING_TEXT_TIMEOUT**: 文字阶段整体超时秒数，默认 `120`；超时后提示“生成投喂文本超时”
+- **FEEDING_MAX_RETRY_ATTEMPTS**: 文字阶段遇到 `503/429` 等可重试错误的最大尝试次数，默认 `3`
+- **FEEDING_TEXT_IMAGE_MAX_MB**: 文字阶段图片压缩上限（MB），两条链路共用，默认 `7`
+- **CUSTOM_CHANNEL_MAX_RETRY_CYCLES**: 自定义 Gemini 通道遇到可重试错误时的最大重试轮数，默认 `3`
+
 ### Discord配置
 
 - **DISCORD_TOKEN**: Discord 机器人令牌（必需）

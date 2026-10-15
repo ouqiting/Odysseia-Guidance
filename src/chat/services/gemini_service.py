@@ -140,6 +140,13 @@ def _api_key_handler(func: Callable) -> Callable:
                 self.key = k
                 self.consecutive_failures = 0
 
+        # 自定义通道只有一把 Key，无法像官方通道那样换 Key 重试，
+        # 因此额外限制重试轮数，避免上游持续 503 时无限重试。
+        custom_channel_cycles = 0
+        max_custom_channel_cycles = app_config.API_RETRY_CONFIG.get(
+            "MAX_CYCLES_PER_CUSTOM_CHANNEL", 3
+        )
+
         while True:
             key_obj = None
             client = None
@@ -333,7 +340,17 @@ def _api_key_handler(func: Callable) -> Callable:
                             success=False, failure_penalty=failure_penalty
                         )
                     else:
-                        # 自定义通道冷却：简单休眠一下
+                        # 自定义通道冷却：简单休眠一下，并限制总重试轮数
+                        custom_channel_cycles += 1
+                        if custom_channel_cycles >= max_custom_channel_cycles:
+                            log.error(
+                                "%s 在自定义通道连续出现可重试错误，已达最大重试轮数 %s，放弃本次调用",
+                                func.__name__,
+                                max_custom_channel_cycles,
+                            )
+                            if func.__name__ == "generate_embedding":
+                                return None
+                            return "服务连接失败，请稍后再试。"
                         await asyncio.sleep(2)
 
             except NoAvailableKeyError as e:

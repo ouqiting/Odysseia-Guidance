@@ -288,6 +288,11 @@ API_RETRY_CONFIG = {
     "MAX_ATTEMPTS_PER_KEY": 1,  # 单个密钥在因可重试错误而被轮换前，允许的最大尝试次数
     "RETRY_DELAY_SECONDS": 1,  # 对同一个密钥进行重试前的延迟（秒）
     "EMPTY_RESPONSE_MAX_ATTEMPTS": 2,  # 当API返回空回复（可能因安全设置）时，使用同一个密钥进行重试的最大次数
+    # 自定义通道（CUSTOM_GEMINI_URL）遇到可重试错误（503/429 等）时的最大重试轮数，
+    # 避免上游持续 503 时无限重试刷屏
+    "MAX_CYCLES_PER_CUSTOM_CHANNEL": max(
+        int(os.getenv("CUSTOM_CHANNEL_MAX_RETRY_CYCLES", "3")), 1
+    ),
 }
 
 # 定义不同安全风险等级对应的信誉惩罚值
@@ -319,11 +324,77 @@ AFFECTION_CONFIG = {
 }
 
 # --- 投喂功能 ---
+# 投喂文字阶段（图文评价）支持两种链路，由 FEEDING_TEXT_PROVIDER 选择：
+# - gemini: 固定走自定义 Gemini 端点 (CUSTOM_GEMINI_URL / CUSTOM_GEMINI_API_KEY)
+# - openai: 走自行配置的 OpenAI 兼容端点
+FEEDING_TEXT_PROVIDER_GEMINI = "gemini"
+FEEDING_TEXT_PROVIDER_OPENAI = "openai"
+FEEDING_TEXT_PROVIDERS = (FEEDING_TEXT_PROVIDER_GEMINI, FEEDING_TEXT_PROVIDER_OPENAI)
+
+# gemini 链路的默认模型名（FEEDING_GEMINI_MODEL 未配置时使用）
+FEEDING_DEFAULT_GEMINI_MODEL = "gemini-3-flash-preview"
+
+
+def normalize_feeding_text_provider(raw_value: str = "") -> str:
+    """归一化投喂文字链路的 provider，非法值回退到 gemini。"""
+    normalized = str(raw_value or "").strip().lower()
+    if normalized in FEEDING_TEXT_PROVIDERS:
+        return normalized
+    return FEEDING_TEXT_PROVIDER_GEMINI
+
+
+def _get_feeding_positive_float(env_name: str, default_value: float) -> float:
+    """读取投喂相关的正数配置，缺失或非法时使用默认值。"""
+    raw_value = os.getenv(env_name)
+    if raw_value is None or str(raw_value).strip() == "":
+        return default_value
+    try:
+        parsed_value = float(str(raw_value).strip())
+    except ValueError:
+        return default_value
+    return parsed_value if parsed_value > 0 else default_value
+
+
+def _get_feeding_positive_int(env_name: str, default_value: int) -> int:
+    """读取投喂相关的正整数配置，缺失或非法时使用默认值。"""
+    return int(_get_feeding_positive_float(env_name, float(default_value)))
+
+
 FEEDING_CONFIG = {
     "COOLDOWN_SECONDS": 1,  # 5 minutes
     "RESPONSE_IMAGE_URL": "",  # 默认优先使用本地 assets 中的等待图和参考图兜底
-    "MODEL": "gemini-3-flash-preview",  # 投喂时使用的文本模型
+    "MODEL": FEEDING_DEFAULT_GEMINI_MODEL,  # 投喂时使用的默认文本模型
+    # --- 文字阶段（图文评价）链路 ---
+    "TEXT_PROVIDER": normalize_feeding_text_provider(
+        os.getenv("FEEDING_TEXT_PROVIDER", FEEDING_TEXT_PROVIDER_GEMINI)
+    ),
+    # gemini 链路：端点固定复用 CUSTOM_GEMINI_URL / CUSTOM_GEMINI_API_KEY，仅模型名可配
+    "GEMINI_MODEL": os.getenv("FEEDING_GEMINI_MODEL", "").strip()
+    or FEEDING_DEFAULT_GEMINI_MODEL,
+    # openai 链路：URL / Key / 模型名均可自行配置
+    "OPENAI_URL": os.getenv("FEEDING_OPENAI_URL", "").strip(),
+    "OPENAI_API_KEY": os.getenv("FEEDING_OPENAI_API_KEY", "").strip(),
+    "OPENAI_MODEL": os.getenv("FEEDING_OPENAI_MODEL", "").strip(),
+    "OPENAI_STREAM": os.getenv("FEEDING_OPENAI_STREAM", "false").strip().lower()
+    in ("true", "1", "yes", "on"),
+    "OPENAI_TIMEOUT": _get_feeding_positive_float("FEEDING_OPENAI_TIMEOUT", 120.0),
+    # 文字阶段整体超时（秒），与生图阶段的 120 秒上限保持一致
+    "TEXT_TIMEOUT": _get_feeding_positive_float("FEEDING_TEXT_TIMEOUT", 120.0),
+    # 可重试错误（503/429 等）的最大尝试次数，避免无限重试
+    "MAX_RETRY_ATTEMPTS": _get_feeding_positive_int("FEEDING_MAX_RETRY_ATTEMPTS", 3),
+    # 文字阶段图片压缩上限（MB），两条链路共用
+    "TEXT_IMAGE_MAX_MB": _get_feeding_positive_float("FEEDING_TEXT_IMAGE_MAX_MB", 7.0),
+    "TEMPERATURE": 1.1,
+    "MAX_OUTPUT_TOKENS": 3000,
 }
+
+
+def get_feeding_text_provider() -> str:
+    """读取投喂文字链路的 provider（运行期 env 优先，便于热更新与测试）。"""
+    raw_value = os.environ.get("FEEDING_TEXT_PROVIDER")
+    if raw_value is None or str(raw_value).strip() == "":
+        return FEEDING_CONFIG["TEXT_PROVIDER"]
+    return normalize_feeding_text_provider(raw_value)
 
 # --- 忏悔功能 ---
 CONFESSION_CONFIG = {

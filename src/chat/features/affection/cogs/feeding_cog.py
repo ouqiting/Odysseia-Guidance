@@ -10,14 +10,16 @@ from discord.ext import commands
 from src.chat.utils.database import chat_db_manager
 from src.chat.features.affection.service.affection_service import AffectionService
 from src.chat.features.affection.service.feeding_service import feeding_service
+from src.chat.features.affection.service.feeding_text_service import (
+    FeedingTextTimeoutError,
+    feeding_text_service,
+)
 from src.chat.features.odysseia_coin.service.coin_service import CoinService
-from src.chat.services.gemini_service import gemini_service
 from src.chat.services.gpt_image_service import gpt_image_service
 from src.chat.services.prompt_service import prompt_service
 from src.chat.config.chat_config import FEEDING_CONFIG, PROMPT_CONFIG
 from src.chat.config import chat_config
 from src.chat.utils.prompt_utils import extract_persona_prompt, replace_emojis
-from src.chat.utils.image_utils import sanitize_image
 from src.config import DEVELOPER_USER_IDS
 from src.chat.services.event_service import event_service
 import logging
@@ -36,37 +38,8 @@ class FeedingCog(commands.Cog):
         self.bot = bot
         self.affection_service = AffectionService()
         self.coin_service = CoinService()
-        self.gemini_service = gemini_service  # 使用全局实例
         self.feeding_service = feeding_service
-
-    async def _prepare_text_stage_image(
-        self, image_bytes: bytes, mime_type: str
-    ) -> tuple[bytes, str]:
-        """压缩投喂图片供文字（视觉）模型使用，仅作用于文字阶段，生图沿用原图。"""
-        original_size = len(image_bytes)
-        try:
-            compressed_bytes, compressed_mime_type = await asyncio.to_thread(
-                sanitize_image, image_bytes
-            )
-        except Exception as e:
-            logger.warning(
-                "投喂文字阶段图片压缩失败，回退使用原图: size_kb=%.2f error=%s",
-                original_size / 1024,
-                e,
-            )
-            return image_bytes, mime_type
-
-        if not compressed_bytes:
-            return image_bytes, mime_type
-
-        if len(compressed_bytes) < original_size:
-            logger.info(
-                "投喂文字阶段图片已压缩: %d -> %d bytes, mime=%s",
-                original_size,
-                len(compressed_bytes),
-                compressed_mime_type,
-            )
-        return compressed_bytes, compressed_mime_type
+        self.feeding_text_service = feeding_text_service
 
     @app_commands.command(name="投喂", description="在吃饭?给神所娘来一口怎么样")
     @app_commands.describe(image="拍一下你这顿饭是什么吧!")
@@ -142,19 +115,12 @@ class FeedingCog(commands.Cog):
             base_prompt = PROMPT_CONFIG.get("feeding_prompt", "")
             prompt = f"{persona_part}\n\n{base_prompt}"
 
-            # 文字阶段：图片先压缩到 7MB 以下再交给视觉模型，避免原图过大报错。
-            # 生图阶段（gpt_image_service）继续使用原图，不做压缩。
-            text_stage_image_bytes, text_stage_mime_type = (
-                await self._prepare_text_stage_image(
-                    image_bytes, image.content_type
-                )
-            )
-
-            response_text = await self.gemini_service.generate_text_with_image(
+            # 文字阶段：图片会在 feeding_text_service 内压缩后再交给视觉模型，
+            # 生图阶段（gpt_image_service）与 Discord 附件继续使用原图。
+            response_text = await self.feeding_text_service.generate_text_with_image(
                 prompt=prompt,
-                image_bytes=text_stage_image_bytes,
-                mime_type=text_stage_mime_type,
-                model_name=FEEDING_CONFIG.get("MODEL"),
+                image_bytes=image_bytes,
+                mime_type=image.content_type,
             )
 
             if not response_text:
@@ -320,6 +286,16 @@ class FeedingCog(commands.Cog):
                 content=None, embed=embed, attachments=attachments
             )
 
+        except FeedingTextTimeoutError as e:
+            logger.error(
+                "投喂文字阶段超时: user_id=%s channel_id=%s timeout=%.0fs",
+                user_id,
+                getattr(interaction.channel, "id", None),
+                e.timeout_seconds,
+            )
+            await interaction.edit_original_response(
+                content="生成投喂文本超时，稍后再喂我一次吧！"
+            )
         except json.JSONDecodeError:
             logger.error(f"Failed to decode JSON response from Gemini: {response_text}")
             await interaction.edit_original_response(
