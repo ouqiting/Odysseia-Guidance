@@ -113,7 +113,20 @@ class FeedingCog(commands.Cog):
                 prompt_service.get_prompt("SYSTEM_PROMPT")
             )
             base_prompt = PROMPT_CONFIG.get("feeding_prompt", "")
-            prompt = f"{persona_part}\n\n{base_prompt}"
+            jailbreak_user = prompt_service.get_prompt("JAILBREAK_USER_PROMPT") or ""
+            jailbreak_model = (
+                prompt_service.get_prompt("JAILBREAK_MODEL_RESPONSE") or ""
+            )
+            prompt = "\n\n".join(
+                part
+                for part in (
+                    jailbreak_user,
+                    jailbreak_model,
+                    persona_part,
+                    base_prompt,
+                )
+                if part
+            )
 
             # 文字阶段：图片会在 feeding_text_service 内压缩后再交给视觉模型，
             # 生图阶段（gpt_image_service）与 Discord 附件继续使用原图。
