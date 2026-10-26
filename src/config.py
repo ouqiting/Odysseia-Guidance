@@ -37,6 +37,11 @@ PROXY_URL = os.getenv("PROXY_URL")
 # 如果使用自定义的 API 端点（例如通过 Cloudflare Worker 代理），请在此设置
 GEMINI_API_BASE_URL = os.getenv("GEMINI_API_BASE_URL")
 
+# --- Vertex AI API 配置 (快速模式 / Express Mode) ---
+VERTEX_API_KEY = os.getenv("VERTEX_API_KEY", os.getenv("VERTEXAI_API_KEY", ""))
+VERTEX_PROJECT_ID = os.getenv("VERTEX_PROJECT_ID", os.getenv("VERTEXAI_PROJECT_ID", ""))
+VERTEX_REGION = os.getenv("VERTEX_REGION", os.getenv("VERTEXAI_REGION", "global")) or "global"
+
 # --- 权限控制 ---
 # 从 .env 文件加载并解析拥有管理权限的用户和角色 ID
 DEVELOPER_USER_IDS = _parse_ids("DEVELOPER_USER_IDS")
@@ -79,6 +84,8 @@ AVAILABLE_AI_MODELS = [
     "gemini-3.1-pro-preview-custom",
     "gemini-2.5-pro-custom",
     "gemini-3-flash-custom",
+    "vertex-gemini-4-argon",
+    "vertex-gemini-3.8-flash",
     "deepseek-flash",
     "deepseek-v4-pro",
     "kimi-k2.6",

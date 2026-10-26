@@ -5,6 +5,7 @@
 """
 
 import os
+from typing import Optional
 from src.config import _parse_ids
 
 # --- Chat 功能总开关 ---
@@ -72,6 +73,54 @@ CUSTOM_GEMINI_ENDPOINTS = {
         "api_key": os.getenv("CUSTOM_GEMINI_API_KEY"),
         "model_name": "gemini-3-flash-preview",
     },
+}
+
+# --- Vertex AI 配置 (快速模式 / Express Mode) ---
+VERTEXAI_GLOBAL_BASE = "https://aiplatform.googleapis.com"
+
+
+def get_vertexai_base_url(
+    region: Optional[str] = None, project_id: Optional[str] = None
+) -> str:
+    """计算 Vertex AI 端点的基础 URL。
+
+    端点计算规则：
+    - region: 不填默认 'global'
+    - project_id: 可选。若未提供 project_id，使用全局端点 https://aiplatform.googleapis.com/v1
+    - 若提供 project_id：
+        - global -> https://aiplatform.googleapis.com
+        - us 或 eu -> https://aiplatform.{region}.rep.googleapis.com
+        - 其它（如 us-central1） -> https://{region}-aiplatform.googleapis.com
+      拼接为：{host}/v1/projects/{project_id}/locations/{region}
+    """
+    clean_region = (region or "").strip().lower() or "global"
+    clean_project = (project_id or "").strip()
+
+    if not clean_project:
+        return f"{VERTEXAI_GLOBAL_BASE}/v1"
+
+    if clean_region == "global":
+        host = VERTEXAI_GLOBAL_BASE
+    elif clean_region in ("us", "eu"):
+        host = f"https://aiplatform.{clean_region}.rep.googleapis.com"
+    else:
+        host = f"https://{clean_region}-aiplatform.googleapis.com"
+
+    return f"{host}/v1/projects/{clean_project}/locations/{clean_region}"
+
+
+VERTEX_CONFIG = {
+    "API_KEY": os.getenv("VERTEX_API_KEY", os.getenv("VERTEXAI_API_KEY", "")),
+    "PROJECT_ID": os.getenv("VERTEX_PROJECT_ID", os.getenv("VERTEXAI_PROJECT_ID", "")),
+    "REGION": (
+        os.getenv("VERTEX_REGION", os.getenv("VERTEXAI_REGION", "global")) or "global"
+    ).strip().lower(),
+}
+
+# Vertex AI 模型映射：模型别名 -> 真实模型名称
+VERTEX_GEMINI_MODELS = {
+    "vertex-gemini-4-argon": "gemini-4-argon",
+    "vertex-gemini-3.8-flash": "gemini-3.8-flash",
 }
 
 # --- ComfyUI 图像生成配置 ---
@@ -202,6 +251,24 @@ MODEL_GENERATION_CONFIG = {
     },
     "custom":{
         "temperature": 1,
+    },
+    "vertex-gemini-4-argon": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 40,
+        "max_output_tokens": 8192,
+        "thinking_config": {
+            "thinking_budget": 0,
+        },
+    },
+    "vertex-gemini-3.8-flash": {
+        "temperature": 1.0,
+        "top_p": 0.95,
+        "top_k": 40,
+        "max_output_tokens": 8192,
+        "thinking_config": {
+            "thinking_budget": 0,
+        },
     },
 
     # 你可以在这里为其他模型添加更多自定义配置

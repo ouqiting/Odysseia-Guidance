@@ -45,6 +45,7 @@ from src.chat.services.openai_service import (
     OpenAIChannelExecutionFailure,
     OpenAIService,
 )
+from src.chat.services.vertex_service import VertexGeminiClient
 
 
 log = logging.getLogger(__name__)
@@ -113,12 +114,20 @@ def _api_key_handler(func: Callable) -> Callable:
         ):
             requested_model_name = args[2]
 
-        # OpenAI 兼容模型的单轮文本生成不需要 Gemini client，直接交给函数内部路由。
+        # OpenAI 兼容模型或 Vertex 模型的单轮文本生成不需要官方 Gemini client，直接交给函数内部路由。
+        is_vertex_model = bool(
+            requested_model_name
+            and (
+                requested_model_name in app_config.VERTEX_GEMINI_MODELS
+                or str(requested_model_name).startswith("vertex-")
+            )
+        )
         if (
-            func.__name__ == "generate_simple_response"
+            func.__name__ in ("generate_simple_response", "generate_text")
             and (
                 requested_model_name in OPENAI_COMPATIBLE_MODELS
                 or OpenAIFallbackService.is_custom_preset_channel(requested_model_name)
+                or is_vertex_model
             )
         ):
             return await func(self, *args, **kwargs)
@@ -1046,6 +1055,102 @@ class GeminiService:
                 blacklist_punishment_active,
             )
 
+        # --- Vertex AI 快速模式专用路由 ---
+        is_vertex_route = bool(
+            model_name
+            and (
+                model_name in app_config.VERTEX_GEMINI_MODELS
+                or str(model_name).startswith("vertex-")
+            )
+        )
+        if is_vertex_route:
+            log.info(f"检测到 Vertex AI 模型 '{model_name}'，将优先尝试使用 Vertex 快速模式端点。")
+            max_attempts = 2  # 1次主尝试 + 1次重试
+            last_exception = None
+            for attempt in range(max_attempts):
+                try:
+                    log.info(
+                        f"尝试使用 Vertex 端点 '{model_name}' (尝试 {attempt + 1}/{max_attempts})"
+                    )
+                    result = await self._generate_with_vertex_api(
+                        user_id=user_id,
+                        guild_id=guild_id,
+                        message=message,
+                        channel=channel,
+                        replied_message=replied_message,
+                        images=images,
+                        text_attachments=text_attachments,
+                        user_name=user_name,
+                        channel_context=channel_context,
+                        world_book_entries=world_book_entries,
+                        personal_summary=personal_summary,
+                        affection_status=affection_status,
+                        user_profile_data=user_profile_data,
+                        guild_name=guild_name,
+                        location_name=location_name,
+                        model_name=model_name,
+                        user_id_for_settings=user_id_for_settings,
+                        override_base_url=one_time_debug_base_url,
+                        retrieval_query_text=retrieval_query_text,
+                        retrieval_query_embedding=retrieval_query_embedding,
+                        rag_timeout_fallback=rag_timeout_fallback,
+                    )
+                    return self._apply_blacklist_notice(
+                        result, blacklist_punishment_active
+                    )
+                except Exception as e:
+                    last_exception = e
+                    log.warning(
+                        f"使用 Vertex 端点 '{model_name}' (尝试 {attempt + 1}/{max_attempts}) 失败: {e}"
+                    )
+                    if attempt < max_attempts - 1:
+                        await asyncio.sleep(1)
+
+            # 如果所有尝试都失败了，则执行回退逻辑
+            if self.key_rotation_service is None:
+                log.error(
+                    f"Vertex 端点 '{model_name}' 的所有 {max_attempts} 次尝试均失败。最终错误: {last_exception}. "
+                    f"未配置 GOOGLE_API_KEYS_LIST，无法回退到官方 API。"
+                )
+                return self._apply_blacklist_notice(
+                    "呜哇，有点晕嘞，Vertex 端点连接失败了，还没有配置备用API密钥呢，等配置好了再来找我玩吧！",
+                    blacklist_punishment_active,
+                )
+
+            log.warning(
+                f"Vertex 端点 '{model_name}' 的所有 {max_attempts} 次尝试均失败。最终错误: {last_exception}. "
+                f"将回退到官方 API。"
+            )
+            fallback_model_name = "gemini-2.5-flash"
+            log.info(f"回退到官方 API，固定使用模型 '{fallback_model_name}'。")
+
+            result = await self._generate_with_official_api(
+                user_id=user_id,
+                guild_id=guild_id,
+                message=message,
+                channel=channel,
+                replied_message=replied_message,
+                images=images,
+                text_attachments=text_attachments,
+                user_name=user_name,
+                channel_context=channel_context,
+                world_book_entries=world_book_entries,
+                personal_summary=personal_summary,
+                affection_status=affection_status,
+                user_profile_data=user_profile_data,
+                guild_name=guild_name,
+                location_name=location_name,
+                model_name=fallback_model_name,
+                user_id_for_settings=user_id_for_settings,
+                debug_base_url=one_time_debug_base_url,
+                retrieval_query_text=retrieval_query_text,
+                retrieval_query_embedding=retrieval_query_embedding,
+                rag_timeout_fallback=rag_timeout_fallback,
+            )
+            return self._apply_blacklist_notice(
+                result, blacklist_punishment_active
+            )
+
         # 如果选择了自定义模型，则尝试使用它，并准备好回退
         if model_name and model_name in app_config.CUSTOM_GEMINI_ENDPOINTS:
             log.info(f"检测到自定义模型 '{model_name}'，将优先尝试使用自定义端点。")
@@ -1176,6 +1281,141 @@ class GeminiService:
         )
         return self._apply_blacklist_notice(
             result, blacklist_punishment_active
+        )
+
+    async def _generate_with_vertex_api(
+        self,
+        user_id: int,
+        guild_id: int,
+        message: str,
+        channel: Optional[Any] = None,
+        replied_message: Optional[str] = None,
+        images: Optional[List[Dict]] = None,
+        text_attachments: Optional[List[Dict[str, Any]]] = None,
+        user_name: str = "用户",
+        channel_context: Optional[List[Dict]] = None,
+        world_book_entries: Optional[List[Dict]] = None,
+        personal_summary: Optional[str] = None,
+        affection_status: Optional[Dict[str, Any]] = None,
+        user_profile_data: Optional[Dict[str, Any]] = None,
+        guild_name: str = "未知服务器",
+        location_name: str = "未知位置",
+        model_name: Optional[str] = None,
+        user_id_for_settings: Optional[str] = None,
+        override_base_url: Optional[str] = None,
+        retrieval_query_text: Optional[str] = None,
+        retrieval_query_embedding: Optional[List[float]] = None,
+        rag_timeout_fallback: bool = False,
+    ) -> str:
+        """使用 Vertex AI 快速模式端点生成 AI 回复。
+
+        不使用密钥轮换池，直接通过 VertexGeminiClient 发起 REST 请求。
+        失败时抛出异常，由调用方 generate_response 处理重试与回退。
+        """
+        if not model_name:
+            raise ValueError("调用 Vertex 端点时需要提供 model_name。")
+
+        vertex_key = app_config.VERTEX_CONFIG.get("API_KEY")
+        if not vertex_key:
+            error_msg = (
+                "未配置 Vertex AI API Key，请检查 VERTEX_API_KEY 环境变量。"
+            )
+            log.error(error_msg)
+            raise ValueError(error_msg)
+
+        real_model_name = app_config.VERTEX_GEMINI_MODELS.get(
+            model_name,
+            model_name[7:] if model_name.startswith("vertex-") else model_name,
+        )
+
+        log.info(
+            f"正在为 Vertex AI 端点创建客户端 (模型: {model_name} -> {real_model_name})"
+        )
+        client = VertexGeminiClient(
+            api_key=vertex_key,
+            project_id=app_config.VERTEX_CONFIG.get("PROJECT_ID"),
+            region=app_config.VERTEX_CONFIG.get("REGION", "global"),
+            override_base_url=override_base_url,
+        )
+
+        sanitized_images_for_endpoint = []
+        if images:
+            total_images = len(images)
+            max_images = app_config.IMAGE_PROCESSING_CONFIG.get(
+                "MAX_IMAGES_PER_MESSAGE", 9
+            )
+            sequential_processing = app_config.IMAGE_PROCESSING_CONFIG.get(
+                "SEQUENTIAL_PROCESSING", True
+            )
+
+            log.info(f"检测到 {total_images} 张图片，将为 Vertex 端点进行净化处理。")
+            images_to_process = images[:max_images]
+            if total_images > max_images:
+                log.warning(
+                    f"图片数量 ({total_images}) 超过最大限制 ({max_images})，将只处理前 {max_images} 张。"
+                )
+
+            for idx, img_data in enumerate(images_to_process, 1):
+                if img_data.get("source") == "attachment":
+                    try:
+                        image_bytes = img_data.get("data") or img_data.get("bytes")
+                        if not image_bytes:
+                            log.warning(
+                                f"附件图片数据字典中缺少 'data' 或 'bytes' 键，已跳过。Keys: {list(img_data.keys())}"
+                            )
+                            continue
+
+                        log.info(f"正在处理第 {idx}/{len(images_to_process)} 张图片...")
+                        sanitized_bytes, new_mime_type = sanitize_image(image_bytes)
+
+                        if "data" in img_data:
+                            del img_data["data"]
+                        if "bytes" in img_data:
+                            del img_data["bytes"]
+
+                        sanitized_images_for_endpoint.append(
+                            {
+                                "data": sanitized_bytes,
+                                "mime_type": new_mime_type,
+                                "source": "attachment",
+                            }
+                        )
+                        log.info(f"第 {idx}/{len(images_to_process)} 张图片处理完成。")
+
+                        if sequential_processing:
+                            import gc
+
+                            gc.collect()
+
+                    except Exception as e:
+                        log.error(f"为 Vertex 端点净化第 {idx} 张图片时失败: {e}", exc_info=True)
+                        return "呜哇，这张图好像有点问题，我处理不了…可以换一张试试吗？<伤心>"
+                else:
+                    sanitized_images_for_endpoint.append(img_data)
+
+        return await self._execute_generation_cycle(
+            user_id=user_id,
+            guild_id=guild_id,
+            message=message,
+            channel=channel,
+            replied_message=replied_message,
+            images=sanitized_images_for_endpoint if images else None,
+            text_attachments=text_attachments,
+            user_name=user_name,
+            channel_context=channel_context,
+            world_book_entries=world_book_entries,
+            personal_summary=personal_summary,
+            affection_status=affection_status,
+            user_profile_data=user_profile_data,
+            guild_name=guild_name,
+            location_name=location_name,
+            prompt_model_name=model_name,
+            api_model_name=real_model_name,
+            client=client,
+            user_id_for_settings=user_id_for_settings,
+            retrieval_query_text=retrieval_query_text,
+            retrieval_query_embedding=retrieval_query_embedding,
+            rag_timeout_fallback=rag_timeout_fallback,
         )
 
     async def _generate_with_custom_endpoint(
@@ -1983,6 +2223,22 @@ class GeminiService:
         )
         final_model_name = model_name or self.default_model_name
 
+        if (
+            final_model_name in app_config.VERTEX_GEMINI_MODELS
+            or str(final_model_name).startswith("vertex-")
+        ):
+            real_model = app_config.VERTEX_GEMINI_MODELS.get(
+                final_model_name,
+                final_model_name[7:] if final_model_name.startswith("vertex-") else final_model_name,
+            )
+            vertex_client = VertexGeminiClient()
+            response = await vertex_client.aio.models.generate_content(
+                model=real_model, contents=[prompt], config=gen_config
+            )
+            if response.parts:
+                return response.text.strip()
+            return None
+
         response = await loop.run_in_executor(
             self.executor,
             lambda: client.models.generate_content(
@@ -2023,6 +2279,25 @@ class GeminiService:
                 model_name=model_name,
                 generation_config=generation_config,
             )
+
+        if (
+            model_name in app_config.VERTEX_GEMINI_MODELS
+            or (model_name and str(model_name).startswith("vertex-"))
+        ):
+            real_model = app_config.VERTEX_GEMINI_MODELS.get(
+                model_name,
+                model_name[7:] if model_name.startswith("vertex-") else model_name,
+            )
+            vertex_client = VertexGeminiClient()
+            gen_config = types.GenerateContentConfig(
+                **generation_config, safety_settings=self.safety_settings
+            )
+            response = await vertex_client.aio.models.generate_content(
+                model=real_model, contents=[prompt], config=gen_config
+            )
+            if response.parts:
+                return response.text.strip()
+            return None
 
         if not client:
             raise ValueError("装饰器未能提供客户端实例。")
