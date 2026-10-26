@@ -163,8 +163,18 @@ class VertexGenerateContentResponse:
         return f"<VertexGenerateContentResponse: text={self.text[:40]!r}, candidates={len(self.candidates)}>"
 
 
+class VertexCountTokensResponse:
+    """与 google.genai.types.CountTokensResponse 兼容的对象。"""
+
+    def __init__(self, total_tokens: int = 0):
+        self.total_tokens = total_tokens
+
+    def __repr__(self) -> str:
+        return f"<VertexCountTokensResponse: total_tokens={self.total_tokens}>"
+
+
 class VertexAIOModels:
-    """异步接口命名空间，提供与 client.aio.models.generate_content 一致的调用入口。"""
+    """异步接口命名空间，提供与 client.aio.models 一致的调用入口。"""
 
     def __init__(self, client: "VertexGeminiClient"):
         self._client = client
@@ -176,6 +186,16 @@ class VertexAIOModels:
         config: Optional[Any] = None,
     ) -> VertexGenerateContentResponse:
         return await self._client.generate_content_async(
+            model=model, contents=contents, config=config
+        )
+
+    async def count_tokens(
+        self,
+        model: str,
+        contents: Any,
+        config: Optional[Any] = None,
+    ) -> VertexCountTokensResponse:
+        return await self._client.count_tokens_async(
             model=model, contents=contents, config=config
         )
 
@@ -192,7 +212,7 @@ class VertexAIO:
 
 
 class VertexSyncModels:
-    """同步接口命名空间，提供与 client.models.generate_content 一致的调用入口。"""
+    """同步接口命名空间，提供与 client.models 一致的调用入口。"""
 
     def __init__(self, client: "VertexGeminiClient"):
         self._client = client
@@ -205,6 +225,18 @@ class VertexSyncModels:
     ) -> VertexGenerateContentResponse:
         return asyncio.run(
             self._client.generate_content_async(
+                model=model, contents=contents, config=config
+            )
+        )
+
+    def count_tokens(
+        self,
+        model: str,
+        contents: Any,
+        config: Optional[Any] = None,
+    ) -> VertexCountTokensResponse:
+        return asyncio.run(
+            self._client.count_tokens_async(
                 model=model, contents=contents, config=config
             )
         )
@@ -693,3 +725,69 @@ class VertexGeminiClient:
                 raise
 
         raise last_error or RuntimeError("Vertex AI 请求未知失败")
+
+    async def count_tokens_async(
+        self,
+        model: str,
+        contents: Any,
+        config: Optional[Any] = None,
+    ) -> VertexCountTokensResponse:
+        """异步计算 Token 数量。
+
+        优先调用 Vertex AI 的 :countTokens 端点，
+        若网络异常或请求失败，自动使用本地估算兜底，保证 Token 记录永不抛出异常。
+        """
+        real_model = app_config.VERTEX_GEMINI_MODELS.get(
+            model,
+            model[7:] if str(model).startswith("vertex-") else model,
+        )
+
+        serialized_contents = self._serialize_contents(contents)
+
+        if not self.api_key:
+            return VertexCountTokensResponse(
+                total_tokens=self._estimate_tokens(serialized_contents)
+            )
+
+        base_url = self._get_base_url()
+        endpoint_url = f"{base_url}/publishers/google/models/{real_model}:countTokens"
+
+        payload = {"contents": serialized_contents}
+        params = {"key": self.api_key}
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        try:
+            client = self._get_http_client()
+            resp = await client.post(
+                endpoint_url,
+                params=params,
+                headers=headers,
+                json=payload,
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                total = data.get("totalTokens", 0)
+                return VertexCountTokensResponse(total_tokens=int(total))
+        except Exception as e:
+            log.debug(f"Vertex AI countTokens 接口调用失败，使用本地估算兜底: {e}")
+
+        return VertexCountTokensResponse(
+            total_tokens=self._estimate_tokens(serialized_contents)
+        )
+
+    @staticmethod
+    def _estimate_tokens(serialized_contents: List[Dict[str, Any]]) -> int:
+        """简单的本地 token 粗略估算兜底。"""
+        total_chars = 0
+        for item in serialized_contents:
+            for part in item.get("parts", []):
+                text = part.get("text")
+                if text:
+                    total_chars += len(text)
+                if "inlineData" in part:
+                    total_chars += 256
+        return max(1, total_chars // 2)

@@ -262,6 +262,34 @@ class TestVertexClient(unittest.IsolatedAsyncioTestCase):
         self.assertIn("publishers/google/models/gemini-4-argon:generateContent", call_args[0])
         self.assertEqual(call_kwargs["params"], {"key": "test-vertex-api-key"})
 
+    async def test_count_tokens_async_call(self):
+        # 1. 模拟上游返回 totalTokens
+        mock_http_response = MagicMock()
+        mock_http_response.status_code = 200
+        mock_http_response.json.return_value = {"totalTokens": 42}
+
+        mock_http_client = MagicMock()
+        mock_http_client.post = AsyncMock(return_value=mock_http_response)
+        mock_http_client.is_closed = False
+        self.client._http_client = mock_http_client
+
+        token_resp = await self.client.aio.models.count_tokens(
+            model="vertex-gemini-4-argon",
+            contents=[{"role": "user", "parts": [{"text": "hello world"}]}],
+        )
+        self.assertEqual(token_resp.total_tokens, 42)
+        call_args, call_kwargs = mock_http_client.post.call_args
+        self.assertIn("publishers/google/models/gemini-4-argon:countTokens", call_args[0])
+        self.assertEqual(call_kwargs["params"], {"key": "test-vertex-api-key"})
+
+        # 2. 模拟上游报错时自动触发本地估算兜底（不抛异常）
+        mock_http_client.post = AsyncMock(side_effect=RuntimeError("网络断开"))
+        fallback_resp = await self.client.aio.models.count_tokens(
+            model="vertex-gemini-4-argon",
+            contents=[{"role": "user", "parts": [{"text": "hello world"}]}],
+        )
+        self.assertGreater(fallback_resp.total_tokens, 0)
+
 
 class TestGeminiServiceVertexRouting(unittest.IsolatedAsyncioTestCase):
     """测试 GeminiService 对 Vertex 模型的识别、路由与回退。"""
