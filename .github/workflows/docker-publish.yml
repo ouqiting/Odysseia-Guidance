@@ -11,7 +11,7 @@ env:
   IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/odysseia-guidance
 
 jobs:
-  docker:
+  prepare:
     runs-on: ubuntu-latest
     outputs:
       started_at: ${{ steps.timing.outputs.started_at }}
@@ -21,15 +21,42 @@ jobs:
         id: timing
         run: echo "started_at=$(date +%s)" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
       - name: Validate Docker Hub secrets
         run: |
           if [ -z "${{ secrets.DOCKERHUB_USERNAME }}" ] || [ -z "${{ secrets.DOCKERHUB_TOKEN }}" ]; then
             echo "Please configure DOCKERHUB_USERNAME and DOCKERHUB_TOKEN in GitHub repository secrets."
             exit 1
           fi
+
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Prepare platform environment
+        run: |
+          platform='${{ matrix.platform }}'
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_NAME }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -39,6 +66,52 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+
+      - name: Export digest
+        run: |
+          mkdir -p ${{ runner.temp }}/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "${{ runner.temp }}/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Extract Docker metadata
         id: meta
@@ -50,31 +123,30 @@ jobs:
             type=ref,event=branch
             type=sha,format=short,prefix=sha-
 
-      - name: Build and push Docker image
-        id: build_push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          platforms: linux/amd64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: Create manifest list and push
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.IMAGE_NAME }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}
 
   notify:
     runs-on: ubuntu-latest
-    needs: docker
+    needs: [prepare, build, merge]
     if: ${{ always() }}
 
     steps:
       - name: Notify Discord webhook
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          DOCKER_JOB_RESULT: ${{ needs.docker.result }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          BUILD_RESULT: ${{ needs.build.result }}
+          MERGE_RESULT: ${{ needs.merge.result }}
           COMMIT_MESSAGE: ${{ github.event.head_commit.message || github.event.pull_request.title || github.sha }}
-          STARTED_AT: ${{ needs.docker.outputs.started_at }}
+          STARTED_AT: ${{ needs.prepare.outputs.started_at }}
         run: |
           python - <<'PY'
           import json
@@ -87,8 +159,10 @@ jobs:
           if not webhook_url:
               raise SystemExit(0)
 
-          docker_job_result = os.environ.get("DOCKER_JOB_RESULT", "").strip().lower()
-          success = docker_job_result == "success"
+          prepare_res = os.environ.get("PREPARE_RESULT", "").strip().lower()
+          build_res = os.environ.get("BUILD_RESULT", "").strip().lower()
+          merge_res = os.environ.get("MERGE_RESULT", "").strip().lower()
+          success = (prepare_res == "success" and build_res == "success" and merge_res == "success")
           result_text = "成功" if success else "失败"
           color = 0x57F287 if success else 0xED4245
           started_at = int(os.environ.get("STARTED_AT", "0") or "0")
@@ -106,6 +180,11 @@ jobs:
                           {
                               "name": "运行结果",
                               "value": result_text,
+                              "inline": False,
+                          },
+                          {
+                              "name": "构建架构",
+                              "value": "linux/amd64, linux/arm64 (并行构建)",
                               "inline": False,
                           },
                           {
